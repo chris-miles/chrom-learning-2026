@@ -83,17 +83,44 @@ minimize ||V - G*theta||^2 + lambda_ridge * ||theta||^2 + lambda_rough * theta^T
 
 R is the roughness penalty matrix (integrated squared second derivative of the basis).
 
-**Note on noise bias:** The one-step Euler-Maruyama estimator is known to be biased when localization noise is significant relative to true displacement per frame. Multi-lag / multi-point finite-difference estimators (Stage 3 of the roadmap) will correct this. The one-step estimator is sufficient for initial development and synthetic validation where noise is controlled.
+### Basis evaluation modes
+
+The positions at which basis functions are evaluated can be shifted to reduce
+noise bias (following Ronceray SFI v2):
+
+- **Ito** (default): Basis evaluated at current positions X(t).
+- **Ito-shift**: Basis evaluated at previous positions X(t-1).  Decorrelates
+  localization noise from the displacement used as the response variable.
+- **Stratonovich**: Basis evaluated at the midpoint (X(t)+X(t+1))/2.  Reduces
+  finite-dt bias.
+
+The velocity is always the forward difference (X(t+1)-X(t))/dt regardless of
+mode.  Controlled by the `basis_eval_mode` parameter in `FitConfig` and
+`build_design_matrix`.
 
 ### Diffusion estimation
 
-Two-stage: fit drift first, then estimate D_x from residual variance:
+Two-stage: fit drift first, then estimate D_x from residual variance.
 
+**Scalar D (default):**
 ```
-D_x = (1 / (2 * d * N_obs)) * sum_{i,n} ||delta_x_i^n - F_hat_i(t_n) * dt||^2 / dt
+D_x = mean(residual^2) * dt / 2
 ```
+where residuals are velocity residuals (displacement/dt minus predicted force).
 
-where d = 3 (spatial dimension) and N_obs is the total number of valid (chromosome, timestep) pairs contributing to the regression — not just the number of timesteps or particles.
+**Local diffusion estimators** (per-particle, per-timepoint):
+
+| Estimator | Formula | Notes |
+|-----------|---------|-------|
+| MSD (default) | \|dX\|^2 / (2 d dt) | Simple, 2-point |
+| Vestergaard | (\|dX\|^2+\|dX_minus\|^2)/(4 d dt) + (dX.dX_minus)/(2 d dt) | 3-point, cancels localization noise |
+| Weak-noise | \|dX-dX_minus\|^2 / (4 d dt) | 3-point, removes drift bias |
+| F-corrected | \|dX-F*dt\|^2 / (2 d dt) | Subtracts inferred force first |
+
+**Variable D(x):** D can optionally be expanded in a 1-D basis along a
+configurable position coordinate (axial, radial, or distance from spindle
+center).  Local D estimates are projected onto the basis via ridge regression.
+See `chromlearn/model_fitting/diffusion.py`.
 
 ---
 
@@ -163,14 +190,15 @@ chrom_learning_2026/               # repository root
 │   │   ├── trajectory.py          # Time windowing, derived quantities, spindle frame
 │   │   └── catalog.py             # Cell database, batch loading by condition
 │   ├── model_fitting/             # SFI kernel learning pipeline
-│   │   ├── __init__.py
+│   │   ├── __init__.py            # FitConfig dataclass
 │   │   ├── basis.py               # B-spline / hat basis, roughness matrices
 │   │   ├── features.py            # Design matrix construction (pairwise basis features)
 │   │   ├── fit.py                 # Penalized regression, CV, bootstrap, diffusion estimation
+│   │   ├── diffusion.py           # Coordinate maps, local D estimators, variable D(x) fitting
 │   │   ├── model.py               # Fitted model container, kernel evaluation, save/load
 │   │   ├── simulate.py            # Euler-Maruyama simulator, synthetic data generation
 │   │   ├── validate.py            # Prediction error, residual diagnostics, recovery metrics
-│   │   └── plotting.py            # Kernel plots, CV curves, residual plots
+│   │   └── plotting.py            # Kernel plots, CV curves, residual plots, D(x) plots
 │   └── analysis/                  # Independent supporting analyses
 │       ├── __init__.py
 │       ├── lag_correlation.py     # Velocity autocorrelation (centrosome vs chromosome)
@@ -212,6 +240,15 @@ class FitConfig:
     # Data
     dt: float = 5.0  # seconds
     d: int = 3        # spatial dimension
+    # Multi-point estimators
+    basis_eval_mode: str = "ito"     # "ito", "ito_shift", or "strato"
+    diffusion_mode: str = "msd"      # "msd", "vestergaard", "weak_noise", or "f_corrected"
+    # Variable diffusion
+    D_variable: bool = False
+    n_basis_D: int = 6
+    r_min_D: float = -8.0
+    r_max_D: float = 8.0
+    D_coordinate: str = "axial"      # "axial", "radial", or "distance"
 ```
 
 ### Module responsibilities
@@ -240,7 +277,8 @@ class FitConfig:
 - `Basis.roughness_matrix() -> array`: Integrated squared second derivative penalty
 
 **model_fitting/features.py**
-- `build_design_matrix(cells, basis_xx, basis_xy) -> (G, V)`: Construct stacked design matrix and response vector from list of trimmed cells
+- `build_design_matrix(cells, basis_xx, basis_xy, basis_eval_mode="ito") -> (G, V)`: Construct stacked design matrix and response vector from list of trimmed cells
+- `basis_eval_mode`: controls where basis functions are evaluated ("ito", "ito_shift", "strato")
 - Internally computes all pairwise distances, unit vectors, and basis feature vectors in 3D
 
 **model_fitting/fit.py**
@@ -265,11 +303,18 @@ class FitConfig:
 - `kernel_recovery_error(fitted, true_kernels) -> dict`: L2 error on synthetic benchmarks
 - `summary_statistics(trajectories) -> dict`: Radial distribution, spacing, MSD
 
+**model_fitting/diffusion.py**
+- `COORDINATE_MAPS`: dict of predefined coordinate maps ("axial", "radial", "distance")
+- `local_diffusion_estimates(cells, dt, mode, ...) -> list[array]`: Per-particle, per-timepoint local D estimates using MSD, Vestergaard, weak-noise, or force-corrected estimators
+- `estimate_diffusion_variable(cells, basis_D, coord_name, dt, ...) -> DiffusionResult`: Fit D(coordinate) as a basis expansion via ridge regression on local D estimates
+- `DiffusionResult`: Stores coefficients, basis, coordinate name, scalar D; has `evaluate(coords)` method
+
 **model_fitting/plotting.py**
 - `plot_kernels(model, bootstrap_result) -> fig`: Learned kernels with confidence bands
 - `plot_cv_curve(cv_result) -> fig`: Error vs basis size
 - `plot_residuals(model, cells) -> fig`: Residual diagnostics
 - `plot_recovery(fitted, true_kernels) -> fig`: Synthetic benchmark comparison
+- `plot_diffusion(diffusion_result) -> fig`: D(coordinate) curve with scalar average reference
 
 **analysis/lag_correlation.py**
 - `compute_lag_correlation(cells, max_lag, smooth_window) -> LagResult`: Velocity dot-product autocorrelation between pole-center and chromosome-center motion
@@ -339,7 +384,7 @@ Instead of a single scalar kernel f(r) producing forces along the inter-particle
 Fitting rod311 (dynein inhibition), CENP-E inhibition, hesperidin, etc. and comparing learned kernels to rpe18_ctr is the core scientific payoff — seeing which interactions change under perturbation. **Trade-off:** minimal technical cost once rpe18_ctr works; the catalog/pipeline design supports this directly.
 
 ### Multi-lag / SFI noise-aware estimators
-Plain one-step Euler-Maruyama increments are biased when localization noise is significant relative to true displacement. Multi-point finite differences and lagged estimators reduce this bias. **Trade-off:** implementation complexity and loss of some temporal resolution, but essential for publication-quality results on real microscopy data.
+~~Plain one-step Euler-Maruyama increments are biased when localization noise is significant relative to true displacement.~~ **Implemented:** Multi-point basis evaluation modes (Ito-shift, Stratonovich) and noise-robust diffusion estimators (Vestergaard, weak-noise) are now available as options. Variable D(x) fitting is also implemented. See `diffusion.py` and the `basis_eval_mode` parameter.
 
 ### Neural baselines (GNN/NRI)
 A graph neural network could learn more flexible (non-radial, many-body) interactions. Useful as comparison: if it fits much better, the pairwise radial assumption is missing something; if similar, it validates the simpler model. **Trade-off:** harder to interpret, easier to overfit, heavier dependencies (PyTorch/JAX). Should only be attempted after the interpretable pipeline is solid.

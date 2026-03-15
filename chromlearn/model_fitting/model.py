@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -20,6 +21,7 @@ class FittedModel:
     D_x: float
     dt: float
     metadata: dict | None = None
+    diffusion_model: Any | None = None
 
     @property
     def theta_xx(self) -> np.ndarray:

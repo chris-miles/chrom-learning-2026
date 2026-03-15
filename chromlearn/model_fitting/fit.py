@@ -77,6 +77,7 @@ def estimate_diffusion(
     theta: np.ndarray,
     dt: float,
     d: int = 3,
+    diffusion_mode: str = "msd",
 ) -> float:
     """Estimate the scalar diffusion coefficient from regression residuals.
 
@@ -93,12 +94,22 @@ def estimate_diffusion(
         theta: Fitted coefficients.
         dt: Time step in seconds.
         d: Spatial dimension (unused; kept for API symmetry).
+        diffusion_mode: Estimation mode. ``"msd"`` uses residual variance
+            (default). For position-dependent diffusion (e.g. ``"local"``),
+            use ``diffusion.local_diffusion_estimates`` directly on the raw
+            displacement data instead of this convenience function.
 
     Returns:
         Estimated isotropic diffusion coefficient ``D_x``.
     """
     if d <= 0:
         raise ValueError("d must be positive.")
+    if diffusion_mode != "msd":
+        raise ValueError(
+            f"estimate_diffusion only supports diffusion_mode='msd'. "
+            f"For mode '{diffusion_mode}', use "
+            f"diffusion.local_diffusion_estimates directly."
+        )
     residuals = V - G @ theta
     mean_square_residual = float(np.mean(residuals**2))
     return 0.5 * mean_square_residual * dt
@@ -112,6 +123,7 @@ def bootstrap_kernels(
     lambda_ridge: float = 1e-3,
     lambda_rough: float = 1e-3,
     rng: np.random.Generator | None = None,
+    basis_eval_mode: str = "ito",
 ) -> BootstrapResult:
     """Bootstrap kernel fits by resampling cells with replacement.
 
@@ -136,7 +148,7 @@ def bootstrap_kernels(
     for boot_index in range(n_boot):
         sampled_indices = rng.choice(len(cells), size=len(cells), replace=True)
         sampled_cells = [cells[index] for index in sampled_indices]
-        G, V = build_design_matrix(sampled_cells, basis_xx, basis_xy)
+        G, V = build_design_matrix(sampled_cells, basis_xx, basis_xy, basis_eval_mode=basis_eval_mode)
         theta_samples[boot_index] = fit_kernels(
             G,
             V,
@@ -158,6 +170,7 @@ def cross_validate(
     basis_xy,
     lambda_ridge: float = 1e-3,
     lambda_rough: float = 1e-3,
+    basis_eval_mode: str = "ito",
 ) -> CVResult:
     """Leave-one-cell-out cross-validation.
 
@@ -185,7 +198,7 @@ def cross_validate(
         ]
         test_cells = [cells[held_out_index]]
 
-        G_train, V_train = build_design_matrix(train_cells, basis_xx, basis_xy)
+        G_train, V_train = build_design_matrix(train_cells, basis_xx, basis_xy, basis_eval_mode=basis_eval_mode)
         if G_train.size == 0:
             continue
 
@@ -196,7 +209,7 @@ def cross_validate(
             lambda_rough=lambda_rough,
             R=roughness,
         )
-        G_test, V_test = build_design_matrix(test_cells, basis_xx, basis_xy)
+        G_test, V_test = build_design_matrix(test_cells, basis_xx, basis_xy, basis_eval_mode=basis_eval_mode)
         if G_test.size == 0:
             continue
         predictions = G_test @ fit_result.theta

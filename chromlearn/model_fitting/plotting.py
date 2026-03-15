@@ -73,6 +73,22 @@ def plot_residuals(residuals: np.ndarray) -> plt.Figure:
     return figure
 
 
+def plot_diffusion(diffusion_result, n_points: int = 200) -> plt.Figure:
+    """Plot the fitted D(coordinate) curve."""
+    coords = np.linspace(diffusion_result.basis_D.r_min, diffusion_result.basis_D.r_max, n_points)
+    D_values = diffusion_result.evaluate(coords)
+
+    figure, axis = plt.subplots(figsize=(6, 4))
+    axis.plot(coords, D_values, color="C0", linewidth=2)
+    axis.axhline(diffusion_result.D_scalar, color="0.5", linestyle="--", linewidth=0.8, label="Scalar average")
+    axis.set_xlabel(f"Position coordinate ({diffusion_result.coord_name})")
+    axis.set_ylabel("D (um\u00b2/s)")
+    axis.set_title("Diffusion coefficient")
+    axis.legend()
+    figure.tight_layout()
+    return figure
+
+
 def plot_recovery(
     r: np.ndarray,
     true_values: np.ndarray,

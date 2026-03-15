@@ -13,7 +13,7 @@ Python codebase for learning pairwise interaction kernels from chromosome/centro
 
 Python package is `chromlearn/` with three subpackages:
 - `chromlearn/io/` — Data loading (`.mat` files), trajectory trimming, spindle-frame transforms, cell catalog
-- `chromlearn/model_fitting/` — Basis functions, design matrix, penalized regression, simulation, validation, plotting
+- `chromlearn/model_fitting/` — Basis functions, design matrix, penalized regression, simulation, validation, plotting, multi-point estimators, variable D(x)
 - `chromlearn/analysis/` — Independent analyses (lag correlation, trajectory visualization)
 
 Notebooks in `notebooks/` are the primary interface. Raw data lives in `data/` (MATLAB `.mat` files). Old MATLAB code in `old_code/` for reference.
