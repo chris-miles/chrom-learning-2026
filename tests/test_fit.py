@@ -1,6 +1,66 @@
 import numpy as np
 
-from chromlearn.model_fitting.fit import estimate_diffusion, fit_kernels
+from chromlearn.io.trajectory import TrimmedCell
+from chromlearn.model_fitting.basis import HatBasis
+from chromlearn.model_fitting.fit import (
+    bootstrap_kernels,
+    cross_validate,
+    estimate_diffusion,
+    fit_kernels,
+)
+from chromlearn.model_fitting.features import build_design_matrix
+from chromlearn.model_fitting.simulate import add_localization_noise, simulate_trajectories
+
+
+def make_synthetic_inference_cell(
+    T: int = 160,
+    N: int = 16,
+    dt: float = 0.1,
+    D_x: float = 0.02,
+    localization_sigma: float = 0.0,
+    seed: int = 0,
+) -> tuple[TrimmedCell, HatBasis, HatBasis, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    basis_xx = HatBasis(0.0, 8.0, n_basis=4)
+    basis_xy = HatBasis(0.0, 10.0, n_basis=4)
+    theta_xx = np.array([0.0, -0.2, 0.0, 0.0])
+    theta_xy = np.array([0.0, 0.4, 0.0, 0.0])
+    theta_true = np.concatenate([theta_xx, theta_xy])
+
+    def kernel_xx(r: np.ndarray) -> np.ndarray:
+        return basis_xx.evaluate(r) @ theta_xx
+
+    def kernel_xy(r: np.ndarray) -> np.ndarray:
+        return basis_xy.evaluate(r) @ theta_xy
+
+    centrioles = np.zeros((T + 1, 3, 2))
+    centrioles[:, 0, 0] = -3.0
+    centrioles[:, 0, 1] = 3.0
+    x0 = rng.normal(0.0, 1.0, size=(N, 3))
+    chromosomes = simulate_trajectories(
+        kernel_xx=kernel_xx,
+        kernel_xy=kernel_xy,
+        centrosome_positions=centrioles,
+        x0=x0,
+        n_steps=T,
+        dt=dt,
+        D_x=D_x,
+        rng=rng,
+    )
+    if localization_sigma > 0.0:
+        chromosomes = add_localization_noise(chromosomes, sigma=localization_sigma, rng=rng)
+
+    cell = TrimmedCell(
+        cell_id="synthetic_fit",
+        condition="test",
+        centrioles=centrioles,
+        chromosomes=chromosomes,
+        tracked=N,
+        dt=dt,
+        start_frame=0,
+        end_frame=T,
+    )
+    return cell, basis_xx, basis_xy, theta_true
 
 
 def test_fit_kernels_recovers_known_theta() -> None:
@@ -40,3 +100,74 @@ def test_estimate_diffusion() -> None:
     theta = np.array([0.0])
     D_hat = estimate_diffusion(V, G, theta, dt=dt, d=d)
     np.testing.assert_allclose(D_hat, D_true, rtol=0.1)
+
+
+def test_end_to_end_recovers_known_kernels_on_synthetic_data() -> None:
+    cell, basis_xx, basis_xy, theta_true = make_synthetic_inference_cell()
+    G, V = build_design_matrix([cell], basis_xx, basis_xy)
+    result = fit_kernels(
+        G,
+        V,
+        lambda_ridge=1e-6,
+        lambda_rough=0.0,
+        R=np.zeros((theta_true.size, theta_true.size)),
+    )
+
+    rmse = float(np.sqrt(np.mean((result.theta - theta_true) ** 2)))
+    assert rmse < 0.1
+    np.testing.assert_allclose(result.theta[[1, 5]], theta_true[[1, 5]], atol=0.1)
+
+
+def test_shifted_basis_eval_modes_reduce_localization_noise_bias() -> None:
+    cell, basis_xx, basis_xy, theta_true = make_synthetic_inference_cell(
+        T=120,
+        N=14,
+        localization_sigma=0.25,
+    )
+    roughness = np.zeros((theta_true.size, theta_true.size))
+    errors = {}
+    for mode in ("ito", "ito_shift", "strato"):
+        G, V = build_design_matrix([cell], basis_xx, basis_xy, basis_eval_mode=mode)
+        result = fit_kernels(G, V, lambda_ridge=1e-6, lambda_rough=0.0, R=roughness)
+        errors[mode] = float(np.sqrt(np.mean((result.theta - theta_true) ** 2)))
+
+    assert errors["ito_shift"] < errors["ito"] * 0.5
+    assert errors["strato"] < errors["ito"] * 0.5
+    assert errors["ito_shift"] < 0.2
+    assert errors["strato"] < 0.2
+
+
+def test_cross_validate_and_bootstrap_support_shifted_basis_eval_mode() -> None:
+    cells = [
+        make_synthetic_inference_cell(T=90, N=12, dt=0.15, seed=seed)[0]
+        for seed in range(4)
+    ]
+    _, basis_xx, basis_xy, theta_true = make_synthetic_inference_cell(T=90, N=12, dt=0.15)
+
+    cv_result = cross_validate(
+        cells,
+        basis_xx,
+        basis_xy,
+        lambda_ridge=1e-6,
+        lambda_rough=0.0,
+        basis_eval_mode="ito_shift",
+    )
+    G, V = build_design_matrix(cells, basis_xx, basis_xy, basis_eval_mode="ito_shift")
+    baseline_error = float(np.mean(V**2))
+    assert np.all(np.isfinite(cv_result.held_out_errors))
+    assert cv_result.mean_error < baseline_error
+
+    bootstrap_result = bootstrap_kernels(
+        cells,
+        basis_xx,
+        basis_xy,
+        n_boot=8,
+        lambda_ridge=1e-6,
+        lambda_rough=0.0,
+        rng=np.random.default_rng(0),
+        basis_eval_mode="ito_shift",
+    )
+    assert bootstrap_result.theta_samples.shape == (8, theta_true.size)
+    assert np.all(np.isfinite(bootstrap_result.theta_std))
+    bootstrap_rmse = float(np.sqrt(np.mean((bootstrap_result.theta_mean - theta_true) ** 2)))
+    assert bootstrap_rmse < 0.08

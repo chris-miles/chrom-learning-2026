@@ -10,7 +10,7 @@ Infers effective distance-dependent forces between chromosomes (and from centros
 
 - `chromlearn/` — Python package
   - `io/` — Data loading, trajectory processing, cell catalog
-  - `model_fitting/` — Basis functions, design matrix, regression, simulation, validation
+  - `model_fitting/` — Basis functions, design matrix, regression, simulation, validation, diffusion estimation
   - `analysis/` — Supporting analyses (lag correlation, trajectory visualization)
 - `notebooks/` — Jupyter notebooks (primary interface)
 - `data/` — Raw `.mat` trajectory files
@@ -20,7 +20,8 @@ Infers effective distance-dependent forces between chromosomes (and from centros
 ## Setup
 
 ```bash
-pip install numpy scipy matplotlib jupyter h5py
+pip install -e .
+# or: pip install numpy scipy matplotlib jupyter h5py
 ```
 
 ## Data
@@ -35,6 +36,16 @@ prometaphase fitting pipeline.
 
 Primary fitting dataset: `rpe18_ctr` NEB-annotated subset
 (`7` of `28` RPE1 control files, 5 s frame interval, micron units).
+
+## Key options
+
+All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init__.py`):
+
+- **Basis evaluation mode** (`basis_eval_mode`): `"ito"` (default), `"ito_shift"` (decorrelates localization noise), `"strato"` (midpoint, reduces finite-dt bias)
+- **Diffusion estimator** (`diffusion_mode`): `"msd"` (default), `"vestergaard"` (noise-robust), `"weak_noise"` (drift-robust), `"f_corrected"` (subtracts inferred force)
+- **Variable D** (`D_variable`): fit D as a function of position along the spindle axis, radial distance, or distance from spindle center
+- **Endpoint method** (`endpoint_method`): `"midpoint_neb_ao"` (default), `"ao_mean"`, `"end_sep"`
+- **Basis type** (`basis_type`): `"bspline"` (default) or `"hat"`
 
 ## Docs
 
