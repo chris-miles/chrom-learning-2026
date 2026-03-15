@@ -16,6 +16,9 @@ data/*.mat
 # Results/outputs
 results/
 
+# Private/reference code not for public repo
+old_code/
+
 # OS
 .DS_Store
 Thumbs.db
