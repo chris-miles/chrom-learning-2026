@@ -30,7 +30,11 @@ Each `.mat` file contains one cell's tracked trajectories:
 - 2 centrosomes (3D positions)
 - Metadata: NEB frame, anaphase onset estimates
 
-Primary dataset: `rpe18_ctr` (28 RPE1 control cells, 5s frame interval, micron units).
+Files with `neb = NaN` are treated as anaphase-only and are excluded from the
+prometaphase fitting pipeline.
+
+Primary fitting dataset: `rpe18_ctr` NEB-annotated subset
+(`7` of `28` RPE1 control files, 5 s frame interval, micron units).
 
 ## Docs
 

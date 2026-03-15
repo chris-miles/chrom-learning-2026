@@ -123,6 +123,10 @@ The `.mat` files may contain NaN entries for chromosomes that are not tracked at
 - **Design matrix masking:** When building the design matrix, rows corresponding to missing observations are excluded. Specifically, if chromosome i has a NaN position at time t_n or t_{n+1}, the displacement for (i, n) is excluded from V, and the corresponding row is excluded from G. Similarly, when computing pairwise features for chromosome i at time t_n, any neighbor k with a NaN position is excluded from the pairwise sum.
 - **No imputation:** We do not interpolate or fill missing positions. Missing data simply reduces the number of observations contributing to the regression.
 
+Some files have `neb = NaN`. These are treated as anaphase-only datasets and
+are excluded entirely from the prometaphase pipeline rather than being imputed
+or trimmed from frame 1.
+
 ### Time window
 
 Trajectories are trimmed from NEB to a configurable endpoint:
@@ -134,13 +138,16 @@ Same time window for all chromosomes within a cell (no per-chromosome attachment
 
 ### Cell conditions
 
-Primary focus: `rpe18_ctr` (28 cells). Other conditions available for future extension:
+Primary focus: the `rpe18_ctr` NEB-annotated subset (7 of 28 files). Other
+conditions available for future extension:
 - rod311_ctr (34 cells), rod311_prc (9), rod311_rev (15)
 - rpe18_rev (22), rpe18_cytoD (7), rpe18_hesp (4), rpe18_zm (2)
 
 ### Pooling strategy
 
-All rpe18_ctr cells pooled into one design matrix for primary fits. Bootstrap over trajectories for uncertainty. Per-cell fits planned as future diagnostic.
+All NEB-annotated `rpe18_ctr` cells are pooled into one design matrix for
+primary fits. Bootstrap over trajectories for uncertainty. Per-cell fits planned
+as future diagnostic.
 
 ---
 
@@ -211,6 +218,7 @@ class FitConfig:
 
 **io/loader.py**
 - `load_cell(path) -> CellData`: Parse .mat, extract centrioles, compute chromosome centroids, extract metadata
+- Rejects files with `neb = NaN` as anaphase-only
 - `CellData` dataclass: cell_id, condition, centrioles (T x 3 x 2), chromosomes (T x 3 x N), neb, ao1, ao2, tracked, dt
 
 **io/trajectory.py**
@@ -222,7 +230,7 @@ class FitConfig:
 
 **io/catalog.py**
 - `list_cells(condition) -> list[str]`: List available cell IDs for a condition
-- `load_condition(condition, data_dir) -> list[CellData]`: Batch-load all cells for a condition. Discovers cells by glob-matching filenames with prefix `{condition}_*.mat`.
+- `load_condition(condition, data_dir) -> list[CellData]`: Batch-load all valid cells for a condition. Discovers cells by glob-matching filenames with prefix `{condition}_*.mat` and filters out files with `neb = NaN`.
 - `CONDITIONS`: dict mapping condition names to filename prefixes (e.g., `"rpe18_ctr"` → `"rpe18_ctr"`)
 
 **model_fitting/basis.py**

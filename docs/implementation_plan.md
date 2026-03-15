@@ -101,6 +101,10 @@ Expected: "no tests ran" (0 collected), exit code 5 (no tests found), no import 
 
 The `.mat` files may be MATLAB v5 format (use `scipy.io.loadmat`) or v7.3/HDF5 format (use `h5py`). Try scipy first, fall back to h5py.
 
+Some files have `neb = NaN`. Treat those as anaphase-only and exclude them from
+the pipeline. `load_cell` should raise on those files, and `catalog.py` should
+filter them out.
+
 - [ ] **Step 1: Write test for load_cell**
 
 ```python
@@ -633,7 +637,7 @@ git commit -m "feat: add trajectory trimming and spindle-frame projection"
 **Files:**
 - Create: `chromlearn/io/catalog.py`, `tests/test_catalog.py`
 
-**Context:** This module discovers and batch-loads cells from the `data/` directory by condition name. Cell `.mat` files follow the naming pattern `{condition}_{id}.mat`, e.g. `rpe18_ctr_500.mat`. The catalog globs for `{condition}_*.mat`.
+**Context:** This module discovers and batch-loads cells from the `data/` directory by condition name. Cell `.mat` files follow the naming pattern `{condition}_{id}.mat`, e.g. `rpe18_ctr_500.mat`. The catalog globs for `{condition}_*.mat` and excludes files with `neb = NaN`.
 
 - [ ] **Step 1: Write tests**
 
@@ -649,7 +653,7 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 
 def test_list_cells_rpe18_ctr():
     cells = list_cells("rpe18_ctr", data_dir=DATA_DIR)
-    assert len(cells) == 28  # known count from design spec
+    assert len(cells) == 7  # NEB-annotated subset
     assert all(isinstance(c, str) for c in cells)
     assert all("rpe18_ctr" in c for c in cells)
 
@@ -666,7 +670,7 @@ def test_list_cells_unknown_condition():
 
 def test_load_condition():
     cells = load_condition("rpe18_ctr", data_dir=DATA_DIR)
-    assert len(cells) == 28
+    assert len(cells) == 7
     assert all(isinstance(c, CellData) for c in cells)
     assert all(c.condition == "rpe18_ctr" for c in cells)
 ```
@@ -1203,7 +1207,7 @@ def _build_cell_features(
             V_blocks.append(v)
 ```
 
-**Performance note:** This nested-loop implementation is O(N^2 * T) per cell and will be slow for 46 chromosomes x 100 timepoints x 28 cells. It is correct and clear. After verifying correctness, it can be vectorized in a follow-up. For now, prioritize clarity. A full vectorization can be done later — the design matrix only needs to be built once per fit.
+**Performance note:** This nested-loop implementation is O(N^2 * T) per cell and will be slow for 46 chromosomes x 100 timepoints x 7 cells in the current NEB-annotated `rpe18_ctr` subset. It is correct and clear. After verifying correctness, it can be vectorized in a follow-up. For now, prioritize clarity. A full vectorization can be done later — the design matrix only needs to be built once per fit.
 
 - [ ] **Step 4: Run tests**
 

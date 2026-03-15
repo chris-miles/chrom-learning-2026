@@ -19,6 +19,9 @@ results/
 # Private/reference code not for public repo
 old_code/
 
+# Local dependency cache
+.deps/
+
 # OS
 .DS_Store
 Thumbs.db

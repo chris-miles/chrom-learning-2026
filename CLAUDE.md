@@ -24,7 +24,8 @@ Notebooks in `notebooks/` are the primary interface. Raw data lives in `data/` (
 - Chromosome position = centroid of sister kinetochores (single 3D particle)
 - Centrosomes are external/given (not modeled)
 - Trajectories start at NEB, endpoint is configurable (default: midpoint NEB-AO)
-- Primary condition: `rpe18_ctr` (28 cells), pooled for fitting
+- Files with `neb = NaN` are anaphase-only and should be ignored
+- Primary condition for fitting: `rpe18_ctr` NEB-annotated subset (7 cells)
 
 ## Code style
 
