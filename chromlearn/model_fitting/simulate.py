@@ -95,6 +95,69 @@ def simulate_trajectories(
     return trajectory
 
 
+def kernel_callables(model):
+    """Build kernel callables from a FittedModel for use with simulate_trajectories.
+
+    Returns:
+        ``(kernel_xx, kernel_xy)`` — ``kernel_xx`` is ``None`` when the model
+        has no chromosome-chromosome basis.
+    """
+    def kernel_xy(r: np.ndarray) -> np.ndarray:
+        return model.evaluate_kernel("xy", r)
+
+    kernel_xx = None
+    if model.basis_xx is not None:
+        def kernel_xx(r: np.ndarray) -> np.ndarray:
+            return model.evaluate_kernel("xx", r)
+
+    return kernel_xx, kernel_xy
+
+
+def simulate_cell(cell, model, rng: np.random.Generator | None = None):
+    """Simulate a cell forward using a fitted model and its real partner trajectories.
+
+    Args:
+        cell: A TrimmedCell whose centrioles provide the partner positions and
+            whose first frame provides the initial chromosome positions.
+        model: A FittedModel with topology, kernels, D_x, and dt.
+        rng: Random number generator.
+
+    Returns:
+        ``(trajectory, sim_cell)`` — the raw trajectory array ``(T, 3, N)``
+        and a TrimmedCell wrapping it (with the same centriole/metadata as the
+        input cell).
+    """
+    from chromlearn.io.trajectory import TrimmedCell as _TrimmedCell
+    from chromlearn.io.trajectory import get_partners
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    kernel_xx, kernel_xy = kernel_callables(model)
+    partners = get_partners(cell, model.topology)
+    traj = simulate_trajectories(
+        kernel_xx=kernel_xx,
+        kernel_xy=kernel_xy,
+        partner_positions=partners,
+        x0=cell.chromosomes[0].T,
+        n_steps=cell.chromosomes.shape[0] - 1,
+        dt=cell.dt,
+        D_x=model.D_x,
+        rng=rng,
+    )
+    sim_cell = _TrimmedCell(
+        cell_id=cell.cell_id,
+        condition=cell.condition,
+        centrioles=cell.centrioles,
+        chromosomes=traj,
+        tracked=cell.tracked,
+        dt=cell.dt,
+        start_frame=cell.start_frame,
+        end_frame=cell.end_frame,
+    )
+    return traj, sim_cell
+
+
 def generate_synthetic_data(
     kernel_xx: Callable[[np.ndarray], np.ndarray] | None,
     kernel_xy: Callable[[np.ndarray], np.ndarray],

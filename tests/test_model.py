@@ -62,27 +62,6 @@ def test_fitted_model_no_xx_kernel():
     assert model.theta_xy.shape == (5,)
 
 
-def test_evaluate_kernel_can_clip_to_basis_domain() -> None:
-    basis_xy = HatBasis(2.0, 6.0, n_basis=3)
-    model = FittedModel(
-        theta=np.array([1.0, 2.0, 3.0]),
-        n_basis_xx=0,
-        n_basis_xy=3,
-        basis_xx=None,
-        basis_xy=basis_xy,
-        D_x=0.4,
-        dt=5.0,
-        topology="center",
-    )
-
-    unclipped = model.evaluate_kernel("xy", np.array([0.5, 2.0, 7.0]))
-    clipped = model.evaluate_kernel("xy", np.array([0.5, 2.0, 7.0]), clip_to_domain=True)
-
-    np.testing.assert_allclose(unclipped, np.array([0.0, 1.0, 0.0]))
-    np.testing.assert_allclose(clipped[[0, 1]], np.array([1.0, 1.0]))
-    np.testing.assert_allclose(clipped[2], model.evaluate_kernel("xy", np.array([6.0]))[0])
-
-
 def test_save_load_no_xx(tmp_path):
     """Round-trip save/load with basis_xx=None."""
     basis_xy = HatBasis(0.0, 10.0, n_basis=5)

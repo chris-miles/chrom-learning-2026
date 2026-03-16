@@ -33,36 +33,17 @@ class FittedModel:
         """Chromosome-partner kernel coefficients."""
         return self.theta[self.n_basis_xx :]
 
-    def evaluate_kernel(
-        self,
-        kernel: str,
-        r: np.ndarray,
-        clip_to_domain: bool = False,
-    ) -> np.ndarray | None:
+    def evaluate_kernel(self, kernel: str, r: np.ndarray) -> np.ndarray | None:
         """Evaluate a fitted kernel at distances *r*.
 
-        Args:
-            kernel: ``"xx"`` or ``"xy"``.
-            r: Distances at which to evaluate the kernel.
-            clip_to_domain: If True, clip *r* to the basis support before
-                evaluation.  This is useful in forward simulation, where a
-                zero-force hole below ``r_min`` is usually less physical than a
-                boundary-value continuation of the fitted kernel.
-
-        Returns:
-            Kernel values at *r*.  Returns ``None`` for ``"xx"`` when the
-            model has no chromosome-chromosome basis.
+        Returns ``None`` for ``"xx"`` when the model has no chromosome-chromosome basis.
         """
         values = np.asarray(r, dtype=np.float64)
         if kernel == "xx":
             if self.basis_xx is None:
                 return None
-            if clip_to_domain:
-                values = np.clip(values, self.basis_xx.r_min, self.basis_xx.r_max)
             return self.basis_xx.evaluate(values) @ self.theta_xx
         if kernel == "xy":
-            if clip_to_domain:
-                values = np.clip(values, self.basis_xy.r_min, self.basis_xy.r_max)
             return self.basis_xy.evaluate(values) @ self.theta_xy
         raise ValueError(f"Unknown kernel '{kernel}'. Use 'xx' or 'xy'.")
 

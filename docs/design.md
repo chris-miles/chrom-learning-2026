@@ -291,7 +291,8 @@ The `topology` field controls which interaction partners are used:
 **model_fitting/fit.py**
 - `fit_kernels(G, V, lambda_ridge, lambda_rough, R) -> FitResult`: Penalized least squares
 - `fit_model(cells, config: FitConfig) -> FittedModel`: High-level wrapper that builds bases, design matrix, fits, and estimates D
-- `cross_validate(cells, config: FitConfig) -> CVResult`: Leave-one-cell-out CV. Constructs bases from config, respects topology.
+- `cross_validate(cells, config: FitConfig) -> CVResult`: Leave-one-cell-out CV (one-step velocity prediction). Constructs bases from config, respects topology.
+- `rollout_cross_validate(cells, config, n_reps, horizons, rng) -> RolloutCVResult`: Leave-one-cell-out rollout validation. Fits on N-1 cells, simulates the held-out cell forward, scores via pathwise MSE (axial/radial), endpoint error, final-frame Wasserstein distance, and per-horizon errors.
 - `bootstrap_kernels(cells, config: FitConfig, n_boot, rng) -> BootstrapResult`: Bootstrap over cells
 - `estimate_diffusion(V, G, theta, dt, d=3) -> float`: Residual-based D_x
 
@@ -301,7 +302,9 @@ The `topology` field controls which interaction partners are used:
 - `FittedModel.save(path)` / `FittedModel.load(path)`: Persistence. Handles `basis_xx=None` and backward-compatible loading (missing topology defaults to "poles").
 
 **model_fitting/simulate.py**
-- `simulate_trajectories(kernel_xx, kernel_xy, partner_positions, x0, n_steps, dt, D_x, rng) -> array`: Euler-Maruyama forward simulation. `partner_positions` shape `(n_partners, T, 3)`. `kernel_xx=None` skips chromosome-chromosome forces.
+- `simulate_trajectories(kernel_xx, kernel_xy, partner_positions, x0, n_steps, dt, D_x, rng) -> array`: Euler-Maruyama forward simulation. `partner_positions` shape `(n_partners, T, 3)`. `kernel_xx=None` skips chromosome-chromosome forces. Vectorized pairwise force computation.
+- `kernel_callables(model) -> (kernel_xx, kernel_xy)`: Build callable pair from a `FittedModel`. Returns `kernel_xx=None` when the model has no xx basis.
+- `simulate_cell(cell, model, rng) -> (trajectory, sim_cell)`: Simulate a `TrimmedCell` forward using a `FittedModel` and the cell's real partner trajectories. Returns the raw trajectory and a `TrimmedCell` wrapping it.
 - `generate_synthetic_data(kernel_xx, kernel_xy, ...) -> SyntheticDataset`: Create benchmark with known ground truth
 - `add_localization_noise(trajectories, sigma) -> array`: Add Gaussian noise to positions
 

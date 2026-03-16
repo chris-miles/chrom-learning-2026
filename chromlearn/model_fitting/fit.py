@@ -41,9 +41,9 @@ class CVResult:
 class RolloutCVResult:
     """Leave-one-cell-out rollout validation summary.
 
-    Metrics are computed on held-out cells by fitting on the remaining cells,
-    simulating chromosomes forward on the held-out pole trajectories, and
-    comparing spindle-frame summaries.
+    Per-cell arrays have shape ``(n_cells,)``; ``horizon_errors`` has shape
+    ``(n_cells, n_horizons)``.  Callers can derive means via
+    ``np.nanmean(result.axial_mse)`` etc.
     """
 
     horizons: np.ndarray
@@ -53,12 +53,6 @@ class RolloutCVResult:
     final_axial_wasserstein: np.ndarray
     final_radial_wasserstein: np.ndarray
     horizon_errors: np.ndarray
-    mean_axial_mse: float
-    mean_radial_mse: float
-    mean_endpoint_mean_error: float
-    mean_final_axial_wasserstein: float
-    mean_final_radial_wasserstein: float
-    mean_horizon_errors: np.ndarray
 
 
 def _block_roughness(R_xx: np.ndarray | None, R_xy: np.ndarray) -> np.ndarray:
@@ -69,68 +63,6 @@ def _block_roughness(R_xx: np.ndarray | None, R_xy: np.ndarray) -> np.ndarray:
 
 def _topology_has_chroms(topology: str) -> bool:
     return topology in ("poles_and_chroms", "center_and_chroms")
-
-
-def _kernel_callables(model, clip_to_domain: bool = False):
-    def kernel_xy(r: np.ndarray) -> np.ndarray:
-        values = model.evaluate_kernel("xy", r, clip_to_domain=clip_to_domain)
-        return np.zeros_like(np.asarray(r, dtype=np.float64)) if values is None else values
-
-    kernel_xx = None
-    if model.basis_xx is not None:
-        def kernel_xx(r: np.ndarray) -> np.ndarray:
-            values = model.evaluate_kernel("xx", r, clip_to_domain=clip_to_domain)
-            return np.zeros_like(np.asarray(r, dtype=np.float64)) if values is None else values
-
-    return kernel_xx, kernel_xy
-
-
-def _simulate_spindle_frame_rollouts(
-    cell: TrimmedCell,
-    model,
-    n_reps: int,
-    rng: np.random.Generator,
-    clip_to_domain: bool = False,
-):
-    from chromlearn.io.trajectory import TrimmedCell as _TrimmedCell
-    from chromlearn.io.trajectory import get_partners, spindle_frame
-    from chromlearn.model_fitting.simulate import simulate_trajectories
-
-    if n_reps <= 0:
-        raise ValueError("n_reps must be positive.")
-
-    kernel_xx, kernel_xy = _kernel_callables(model, clip_to_domain=clip_to_domain)
-    partners = get_partners(cell, model.topology)
-    x0 = cell.chromosomes[0].T
-    n_steps = cell.chromosomes.shape[0] - 1
-
-    rollouts = []
-    for _rep in range(n_reps):
-        rep_seed = int(rng.integers(0, np.iinfo(np.int64).max))
-        rep_rng = np.random.default_rng(rep_seed)
-        traj = simulate_trajectories(
-            kernel_xx=kernel_xx,
-            kernel_xy=kernel_xy,
-            partner_positions=partners,
-            x0=x0,
-            n_steps=n_steps,
-            dt=cell.dt,
-            D_x=model.D_x,
-            rng=rep_rng,
-        )
-        sim_cell = _TrimmedCell(
-            cell_id=cell.cell_id,
-            condition=cell.condition,
-            centrioles=cell.centrioles,
-            chromosomes=traj,
-            tracked=cell.tracked,
-            dt=cell.dt,
-            start_frame=cell.start_frame,
-            end_frame=cell.end_frame,
-        )
-        rollouts.append(spindle_frame(sim_cell))
-
-    return rollouts
 
 
 def fit_kernels(
@@ -344,7 +276,6 @@ def rollout_cross_validate(
     n_reps: int = 8,
     horizons: tuple[int, ...] = (1, 5, 10, 20),
     rng: np.random.Generator | None = None,
-    clip_to_domain: bool = False,
 ) -> RolloutCVResult:
     """Leave-one-cell-out rollout validation on spindle-frame summaries.
 
@@ -352,13 +283,16 @@ def rollout_cross_validate(
     cell forward from its real initial conditions while using its real partner
     trajectories, and compares the resulting spindle-frame summaries.
 
-    The returned metrics are:
-    - full-trajectory MSE of mean axial position
-    - full-trajectory MSE of mean radial position
-    - final-frame 1D Wasserstein distances for axial and radial distributions
-    - per-horizon combined axial/radial error at selected time steps
+    Metrics per held-out cell:
+
+    - ``axial_mse`` / ``radial_mse``: full-trajectory MSE of mean position.
+    - ``endpoint_mean_error``: squared error of the mean position at the final frame.
+    - ``final_axial_wasserstein`` / ``final_radial_wasserstein``: 1-D Wasserstein
+      distance between real and simulated chromosome distributions at the final frame.
+    - ``horizon_errors``: combined axial+radial squared error at selected time horizons.
     """
     from chromlearn.io.trajectory import spindle_frame
+    from chromlearn.model_fitting.simulate import simulate_cell
 
     if not cells:
         raise ValueError("rollout_cross_validate requires at least one cell.")
@@ -388,18 +322,23 @@ def rollout_cross_validate(
         real_axial_mean = np.nanmean(real_sf.axial, axis=1)
         real_radial_mean = np.nanmean(real_sf.radial, axis=1)
 
-        sim_rollouts = _simulate_spindle_frame_rollouts(
-            test_cell, model, n_reps=n_reps, rng=rng,
-            clip_to_domain=clip_to_domain,
+        # Simulate n_reps rollouts and average their spindle-frame summaries
+        sim_rollouts = []
+        for _ in range(n_reps):
+            rep_rng = np.random.default_rng(
+                int(rng.integers(0, np.iinfo(np.int64).max))
+            )
+            _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
+            sim_rollouts.append(spindle_frame(sim_cell))
+
+        sim_axial_mean = np.nanmean(
+            np.stack([np.nanmean(sf.axial, axis=1) for sf in sim_rollouts], axis=0),
+            axis=0,
         )
-        sim_axial_stack = np.stack(
-            [np.nanmean(sf.axial, axis=1) for sf in sim_rollouts], axis=0,
+        sim_radial_mean = np.nanmean(
+            np.stack([np.nanmean(sf.radial, axis=1) for sf in sim_rollouts], axis=0),
+            axis=0,
         )
-        sim_radial_stack = np.stack(
-            [np.nanmean(sf.radial, axis=1) for sf in sim_rollouts], axis=0,
-        )
-        sim_axial_mean = np.nanmean(sim_axial_stack, axis=0)
-        sim_radial_mean = np.nanmean(sim_radial_stack, axis=0)
 
         axial_mse[held_out_index] = float(
             np.nanmean((real_axial_mean - sim_axial_mean) ** 2)
@@ -412,10 +351,11 @@ def rollout_cross_validate(
             + (real_radial_mean[-1] - sim_radial_mean[-1]) ** 2
         )
 
-        real_ax_final = real_sf.axial[-1]
-        real_rad_final = real_sf.radial[-1]
-        real_ax_valid = real_ax_final[np.isfinite(real_ax_final)]
-        real_rad_valid = real_rad_final[np.isfinite(real_rad_final)]
+        # Final-frame distributional comparison (pool all rollouts)
+        real_ax_valid = real_sf.axial[-1]
+        real_ax_valid = real_ax_valid[np.isfinite(real_ax_valid)]
+        real_rad_valid = real_sf.radial[-1]
+        real_rad_valid = real_rad_valid[np.isfinite(real_rad_valid)]
         sim_ax_valid = np.concatenate(
             [sf.axial[-1][np.isfinite(sf.axial[-1])] for sf in sim_rollouts]
         )
@@ -449,12 +389,6 @@ def rollout_cross_validate(
         final_axial_wasserstein=final_axial_wasserstein,
         final_radial_wasserstein=final_radial_wasserstein,
         horizon_errors=horizon_errors,
-        mean_axial_mse=float(np.nanmean(axial_mse)),
-        mean_radial_mse=float(np.nanmean(radial_mse)),
-        mean_endpoint_mean_error=float(np.nanmean(endpoint_mean_error)),
-        mean_final_axial_wasserstein=float(np.nanmean(final_axial_wasserstein)),
-        mean_final_radial_wasserstein=float(np.nanmean(final_radial_wasserstein)),
-        mean_horizon_errors=np.nanmean(horizon_errors, axis=0),
     )
 
 

@@ -52,7 +52,7 @@ from chromlearn.model_fitting.fit import (
 )
 from chromlearn.model_fitting.model import FittedModel
 from chromlearn.model_fitting.plotting import plot_cv_curve, plot_kernels
-from chromlearn.model_fitting.simulate import simulate_trajectories
+from chromlearn.model_fitting.simulate import simulate_cell, simulate_trajectories
 
 plt.rcParams["figure.dpi"] = 110
 
@@ -412,43 +412,8 @@ ROLLOUT_REPS = 4
 ROLLOUT_HORIZONS = (1, 5, 10, 20)
 
 
-def _kernel_xy_for_sim(model):
-    def _f(r):
-        return model.evaluate_kernel("xy", r)
-    return _f
-
-
-def _kernel_xx_for_sim(model):
-    if model.basis_xx is None:
-        return None
-
-    def _f(r):
-        return model.evaluate_kernel("xx", r)
-    return _f
-
-
 def _simulate_cell_once(cell: TrimmedCell, model: FittedModel, seed: int):
-    partners = get_partners(cell, model.topology)
-    traj = simulate_trajectories(
-        kernel_xx=_kernel_xx_for_sim(model),
-        kernel_xy=_kernel_xy_for_sim(model),
-        partner_positions=partners,
-        x0=cell.chromosomes[0].T,
-        n_steps=cell.chromosomes.shape[0] - 1,
-        dt=cell.dt,
-        D_x=model.D_x,
-        rng=np.random.default_rng(seed),
-    )
-    sim_cell = TrimmedCell(
-        cell_id=cell.cell_id,
-        condition=cell.condition,
-        centrioles=cell.centrioles,
-        chromosomes=traj,
-        tracked=cell.tracked,
-        dt=cell.dt,
-        start_frame=cell.start_frame,
-        end_frame=cell.end_frame,
-    )
+    traj, sim_cell = simulate_cell(cell, model, rng=np.random.default_rng(seed))
     return traj, spindle_frame(sim_cell)
 
 
@@ -644,30 +609,28 @@ for topo_index, topology in enumerate(TOPOLOGIES):
         n_reps=ROLLOUT_REPS,
         horizons=ROLLOUT_HORIZONS,
         rng=np.random.default_rng(200 + topo_index),
-        clip_to_domain=False,
     )
     rr = rollout_results[topology]
-    print(f"  {topology:<22}  axial_MSE={rr.mean_axial_mse:.5f}  "
-          f"radial_MSE={rr.mean_radial_mse:.5f}  "
-          f"endpoint_MSE={rr.mean_endpoint_mean_error:.5f}  "
-          f"final_W1(ax,rad)=({rr.mean_final_axial_wasserstein:.4f}, "
-          f"{rr.mean_final_radial_wasserstein:.4f})")
+    print(f"  {topology:<22}  axial_MSE={np.nanmean(rr.axial_mse):.5f}  "
+          f"radial_MSE={np.nanmean(rr.radial_mse):.5f}  "
+          f"endpoint_MSE={np.nanmean(rr.endpoint_mean_error):.5f}  "
+          f"final_W1(ax,rad)=({np.nanmean(rr.final_axial_wasserstein):.4f}, "
+          f"{np.nanmean(rr.final_radial_wasserstein):.4f})")
 
 
 # %%
 rollout_time_score = {
-    topology: rollout_results[topology].mean_axial_mse + rollout_results[topology].mean_radial_mse
+    topology: float(np.nanmean(rollout_results[topology].axial_mse)
+                    + np.nanmean(rollout_results[topology].radial_mse))
     for topology in TOPOLOGIES
 }
 rollout_endpoint_score = {
-    topology: rollout_results[topology].mean_endpoint_mean_error
+    topology: float(np.nanmean(rollout_results[topology].endpoint_mean_error))
     for topology in TOPOLOGIES
 }
 rollout_dist_score = {
-    topology: (
-        rollout_results[topology].mean_final_axial_wasserstein
-        + rollout_results[topology].mean_final_radial_wasserstein
-    )
+    topology: float(np.nanmean(rollout_results[topology].final_axial_wasserstein)
+                    + np.nanmean(rollout_results[topology].final_radial_wasserstein))
     for topology in TOPOLOGIES
 }
 
@@ -695,7 +658,7 @@ axes[2].set_title("LOOCV final distribution mismatch\n(axial W1 + radial W1)")
 for topo_index, topology in enumerate(TOPOLOGIES):
     axes[3].plot(
         rollout_results[topology].horizons,
-        rollout_results[topology].mean_horizon_errors,
+        np.nanmean(rollout_results[topology].horizon_errors, axis=0),
         marker="o",
         linewidth=1.8,
         label=topology,
