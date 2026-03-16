@@ -33,6 +33,8 @@ class FitConfig:
         D_coordinate: Position coordinate for variable D — ``"axial"`` (default,
             along spindle axis), ``"radial"`` (perpendicular to spindle axis),
             or ``"distance"`` (from spindle center).
+        topology: Interaction topology — "poles" (default), "center",
+            "poles_and_chroms", or "center_and_chroms".
     """
 
     endpoint_method: str = "midpoint_neb_ao"
@@ -54,3 +56,4 @@ class FitConfig:
     r_min_D: float = -8.0
     r_max_D: float = 8.0
     D_coordinate: str = "axial"
+    topology: str = "poles"

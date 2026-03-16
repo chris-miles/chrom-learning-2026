@@ -48,6 +48,25 @@ def pole_center(cell: CellData | TrimmedCell) -> np.ndarray:
     return 0.5 * (cell.centrioles[:, :, 0] + cell.centrioles[:, :, 1])
 
 
+VALID_TOPOLOGIES = ("poles", "center", "poles_and_chroms", "center_and_chroms")
+
+
+def get_partners(cell: CellData | TrimmedCell, topology: str) -> np.ndarray:
+    """Construct interaction partner trajectories for a given topology.
+
+    Returns:
+        Array of shape ``(n_partners, T, 3)``.
+    """
+    if topology not in VALID_TOPOLOGIES:
+        raise ValueError(
+            f"Unknown topology '{topology}'. Expected one of {VALID_TOPOLOGIES}."
+        )
+    if topology in ("poles", "poles_and_chroms"):
+        return cell.centrioles.transpose(2, 0, 1)  # (2, T, 3)
+    # center or center_and_chroms
+    return pole_center(cell)[np.newaxis]  # (1, T, 3)
+
+
 def _savgol_window(length: int, desired: int) -> int | None:
     if length < 3:
         return None

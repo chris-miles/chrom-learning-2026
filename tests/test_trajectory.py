@@ -88,3 +88,47 @@ def test_spindle_frame_axes() -> None:
     assert isinstance(frame, SpindleFrameData)
     assert frame.axial.shape == (trimmed.chromosomes.shape[0], trimmed.chromosomes.shape[2])
     assert frame.radial.shape == (trimmed.chromosomes.shape[0], trimmed.chromosomes.shape[2])
+
+
+import numpy as np
+from chromlearn.io.trajectory import TrimmedCell, get_partners, pole_center
+
+
+def _make_cell(T=20, N=4):
+    centrioles = np.zeros((T, 3, 2))
+    centrioles[:, 0, 0] = -5.0
+    centrioles[:, 0, 1] = 5.0
+    chromosomes = np.zeros((T, 3, N))
+    return TrimmedCell(
+        cell_id="test", condition="test",
+        centrioles=centrioles, chromosomes=chromosomes,
+        tracked=N, dt=5.0, start_frame=0, end_frame=T - 1,
+    )
+
+
+def test_get_partners_poles():
+    cell = _make_cell()
+    partners = get_partners(cell, "poles")
+    assert partners.shape == (2, 20, 3)
+    np.testing.assert_allclose(partners[0, :, 0], -5.0)
+    np.testing.assert_allclose(partners[1, :, 0], 5.0)
+
+
+def test_get_partners_center():
+    cell = _make_cell()
+    partners = get_partners(cell, "center")
+    assert partners.shape == (1, 20, 3)
+    expected = pole_center(cell)
+    np.testing.assert_allclose(partners[0], expected)
+
+
+def test_get_partners_poles_and_chroms():
+    cell = _make_cell()
+    partners = get_partners(cell, "poles_and_chroms")
+    assert partners.shape == (2, 20, 3)
+
+
+def test_get_partners_center_and_chroms():
+    cell = _make_cell()
+    partners = get_partners(cell, "center_and_chroms")
+    assert partners.shape == (1, 20, 3)
