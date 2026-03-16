@@ -39,10 +39,11 @@ def make_synthetic_inference_cell(
     centrioles[:, 0, 0] = -3.0
     centrioles[:, 0, 1] = 3.0
     x0 = rng.normal(0.0, 1.0, size=(N, 3))
+    partners = centrioles.transpose(2, 0, 1)  # (2, T+1, 3)
     chromosomes = simulate_trajectories(
         kernel_xx=kernel_xx,
         kernel_xy=kernel_xy,
-        centrosome_positions=centrioles,
+        partner_positions=partners,
         x0=x0,
         n_steps=T,
         dt=dt,

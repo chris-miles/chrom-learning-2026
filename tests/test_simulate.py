@@ -11,14 +11,14 @@ def test_simulate_output_shape() -> None:
     rng = np.random.default_rng(42)
     n_chrom = 10
     n_steps = 50
-    centrosomes = np.zeros((n_steps + 1, 3, 2))
-    centrosomes[:, 0, 0] = -5.0
-    centrosomes[:, 0, 1] = 5.0
+    partners = np.zeros((2, n_steps + 1, 3))
+    partners[0, :, 0] = -5.0
+    partners[1, :, 0] = 5.0
     x0 = rng.normal(0.0, 2.0, size=(n_chrom, 3))
     trajectory = simulate_trajectories(
         kernel_xx=lambda r: np.zeros_like(r),
         kernel_xy=lambda r: np.zeros_like(r),
-        centrosome_positions=centrosomes,
+        partner_positions=partners,
         x0=x0,
         n_steps=n_steps,
         dt=5.0,
@@ -34,12 +34,12 @@ def test_pure_diffusion_msd() -> None:
     n_steps = 200
     dt = 1.0
     D = 0.5
-    centrosomes = np.zeros((n_steps + 1, 3, 2))
+    partners = np.zeros((2, n_steps + 1, 3))
     x0 = np.zeros((n_chrom, 3))
     trajectory = simulate_trajectories(
         kernel_xx=lambda r: np.zeros_like(r),
         kernel_xy=lambda r: np.zeros_like(r),
-        centrosome_positions=centrosomes,
+        partner_positions=partners,
         x0=x0,
         n_steps=n_steps,
         dt=dt,
@@ -74,3 +74,43 @@ def test_generate_synthetic_data() -> None:
     assert dataset.centrosomes.shape == (51, 3, 2)
     assert dataset.kernel_xx is not None
     assert dataset.kernel_xy is not None
+
+
+def test_simulate_single_partner():
+    """simulate_trajectories works with 1 partner (center topology)."""
+    rng = np.random.default_rng(42)
+    n_steps = 50
+    partners = np.zeros((1, n_steps + 1, 3))
+    x0 = rng.normal(0.0, 2.0, size=(5, 3))
+    trajectory = simulate_trajectories(
+        kernel_xx=None,
+        kernel_xy=lambda r: -0.01 * r,
+        partner_positions=partners,
+        x0=x0,
+        n_steps=n_steps,
+        dt=5.0,
+        D_x=0.1,
+        rng=rng,
+    )
+    assert trajectory.shape == (n_steps + 1, 3, 5)
+
+
+def test_simulate_kernel_xx_none():
+    """kernel_xx=None skips chromosome-chromosome forces."""
+    rng = np.random.default_rng(42)
+    n_steps = 50
+    partners = np.zeros((2, n_steps + 1, 3))
+    partners[0, :, 0] = -5.0
+    partners[1, :, 0] = 5.0
+    x0 = rng.normal(0.0, 2.0, size=(5, 3))
+    trajectory = simulate_trajectories(
+        kernel_xx=None,
+        kernel_xy=lambda r: np.zeros_like(r),
+        partner_positions=partners,
+        x0=x0,
+        n_steps=n_steps,
+        dt=5.0,
+        D_x=0.1,
+        rng=rng,
+    )
+    assert trajectory.shape == (n_steps + 1, 3, 5)
