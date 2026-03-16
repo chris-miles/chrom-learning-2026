@@ -15,12 +15,13 @@ class FittedModel:
     theta: np.ndarray
     n_basis_xx: int
     n_basis_xy: int
-    basis_xx: BSplineBasis | HatBasis
+    basis_xx: BSplineBasis | HatBasis | None
     basis_xy: BSplineBasis | HatBasis
     D_x: float
     dt: float
     metadata: dict | None = None
     diffusion_model: DiffusionResult | None = None
+    topology: str = "poles"
 
     @property
     def theta_xx(self) -> np.ndarray:
@@ -30,9 +31,11 @@ class FittedModel:
     def theta_xy(self) -> np.ndarray:
         return self.theta[self.n_basis_xx :]
 
-    def evaluate_kernel(self, kernel: str, r: np.ndarray) -> np.ndarray:
+    def evaluate_kernel(self, kernel: str, r: np.ndarray) -> np.ndarray | None:
         values = np.asarray(r, dtype=np.float64)
         if kernel == "xx":
+            if self.basis_xx is None:
+                return None
             return self.basis_xx.evaluate(values) @ self.theta_xx
         if kernel == "xy":
             return self.basis_xy.evaluate(values) @ self.theta_xy
@@ -41,7 +44,7 @@ class FittedModel:
     def save(self, path: str | Path) -> None:
         """Save the model to an ``.npz`` file.
 
-        Persists theta, basis configurations, scalar D, metadata, and
+        Persists theta, basis configurations, scalar D, metadata, topology, and
         (if present) the variable-diffusion model.
         """
         output_path = Path(path)
@@ -63,6 +66,15 @@ class FittedModel:
         else:
             diffusion_payload = {"diffusion_has_model": False}
 
+        basis_xx_payload = {}
+        if self.basis_xx is not None:
+            basis_xx_payload = {
+                "basis_xx_type": "bspline" if isinstance(self.basis_xx, BSplineBasis) else "hat",
+                "basis_xx_r_min": self.basis_xx.r_min,
+                "basis_xx_r_max": self.basis_xx.r_max,
+                "basis_xx_n_basis": self.basis_xx.n_basis,
+            }
+
         np.savez(
             output_path,
             theta=self.theta,
@@ -70,15 +82,13 @@ class FittedModel:
             n_basis_xy=self.n_basis_xy,
             D_x=self.D_x,
             dt=self.dt,
+            topology=self.topology,
             metadata=np.array(self.metadata, dtype=object),
-            basis_xx_type="bspline" if isinstance(self.basis_xx, BSplineBasis) else "hat",
-            basis_xx_r_min=self.basis_xx.r_min,
-            basis_xx_r_max=self.basis_xx.r_max,
-            basis_xx_n_basis=self.basis_xx.n_basis,
             basis_xy_type="bspline" if isinstance(self.basis_xy, BSplineBasis) else "hat",
             basis_xy_r_min=self.basis_xy.r_min,
             basis_xy_r_max=self.basis_xy.r_max,
             basis_xy_n_basis=self.basis_xy.n_basis,
+            **basis_xx_payload,
             **diffusion_payload,
         )
 
@@ -94,6 +104,18 @@ class FittedModel:
             return HatBasis(float(r_min), float(r_max), int(n_basis))
 
         metadata = data["metadata"].item() if data["metadata"].shape == () else None
+        topology = str(data["topology"]) if "topology" in data else "poles"
+
+        n_basis_xx = int(data["n_basis_xx"])
+        basis_xx = None
+        if n_basis_xx > 0 and "basis_xx_type" in data:
+            basis_xx = make_basis(
+                str(data["basis_xx_type"]),
+                float(data["basis_xx_r_min"]),
+                float(data["basis_xx_r_max"]),
+                n_basis_xx,
+            )
+
         diffusion_model = None
         if "diffusion_has_model" in data and bool(data["diffusion_has_model"]):
             basis_D = make_basis(
@@ -111,14 +133,9 @@ class FittedModel:
 
         return cls(
             theta=np.asarray(data["theta"], dtype=np.float64),
-            n_basis_xx=int(data["n_basis_xx"]),
+            n_basis_xx=n_basis_xx,
             n_basis_xy=int(data["n_basis_xy"]),
-            basis_xx=make_basis(
-                str(data["basis_xx_type"]),
-                float(data["basis_xx_r_min"]),
-                float(data["basis_xx_r_max"]),
-                int(data["basis_xx_n_basis"]),
-            ),
+            basis_xx=basis_xx,
             basis_xy=make_basis(
                 str(data["basis_xy_type"]),
                 float(data["basis_xy_r_min"]),
@@ -129,4 +146,5 @@ class FittedModel:
             dt=float(data["dt"]),
             metadata=metadata,
             diffusion_model=diffusion_model,
+            topology=topology,
         )
