@@ -17,13 +17,26 @@ def plot_kernels(
     if ci_levels is None:
         ci_levels = [0.05]
 
-    figure, axes = plt.subplots(1, 2, figsize=(12, 4.5))
-    specs = [
-        ("xx", model.basis_xx, model.theta_xx, "Chromosome-chromosome"),
-        ("xy", model.basis_xy, model.theta_xy, "Centrosome on chromosome"),
-    ]
+    has_xx = model.basis_xx is not None
+    topology = getattr(model, "topology", "poles")
+    partner_label = (
+        "Chromosome \u2190 pole center"
+        if topology in ("center", "center_and_chroms")
+        else "Chromosome \u2190 poles"
+    )
 
-    for axis, (name, basis, theta, title) in zip(axes, specs):
+    specs = []
+    if has_xx:
+        specs.append(("xx", model.basis_xx, model.theta_xx,
+                       "Chromosome \u2190 chromosome"))
+    specs.append(("xy", model.basis_xy, model.theta_xy, partner_label))
+
+    n_panels = len(specs)
+    figure, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 4.5),
+                                squeeze=False)
+
+    for col, (name, basis, theta, title) in enumerate(specs):
+        axis = axes[0, col]
         radius = np.linspace(basis.r_min, basis.r_max, n_points)
         phi = basis.evaluate(radius)
         axis.plot(radius, phi @ theta, color="C0", linewidth=2)
@@ -38,7 +51,7 @@ def plot_kernels(
                 hi = np.quantile(curves, 1.0 - level, axis=1)
                 axis.fill_between(radius, lo, hi, color="C0", alpha=0.2)
         axis.axhline(0.0, color="0.5", linestyle="--", linewidth=0.8)
-        axis.set_xlabel("Distance (um)")
+        axis.set_xlabel("Distance (\u00b5m)")
         axis.set_ylabel("Force")
         axis.set_title(title)
 
