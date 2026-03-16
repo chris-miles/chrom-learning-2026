@@ -83,3 +83,41 @@ def test_nan_handling() -> None:
     assert G.shape[0] < 4 * 19 * 3
     assert not np.any(np.isnan(G))
     assert not np.any(np.isnan(V))
+
+
+def test_topology_poles_matches_default():
+    """Regression: topology='poles' produces identical output to pre-refactor code."""
+    cell = make_simple_trimmed_cell(T=20, N=4)
+    basis_xx = HatBasis(0.0, 10.0, n_basis=5)
+    basis_xy = HatBasis(0.0, 15.0, n_basis=5)
+    G_old, V_old = build_design_matrix([cell], basis_xx, basis_xy)
+    G_new, V_new = build_design_matrix(
+        [cell], basis_xx, basis_xy, topology="poles",
+    )
+    np.testing.assert_allclose(G_new, G_old)
+    np.testing.assert_allclose(V_new, V_old)
+
+
+def test_basis_xx_none_poles_only():
+    """topology='poles' with basis_xx=None skips xx block."""
+    cell = make_simple_trimmed_cell(T=20, N=4)
+    basis_xy = HatBasis(0.0, 15.0, n_basis=5)
+    G, V = build_design_matrix([cell], None, basis_xy, topology="poles")
+    assert G.shape[1] == 5
+    assert G.shape[0] == 4 * 19 * 3
+    assert V.shape[0] == G.shape[0]
+
+
+def test_basis_xx_none_center_topology():
+    """topology='center' uses pole midpoint as single partner."""
+    cell = make_simple_trimmed_cell(T=20, N=4)
+    basis_xy = HatBasis(0.0, 15.0, n_basis=5)
+    G_center, V_center = build_design_matrix(
+        [cell], None, basis_xy, topology="center",
+    )
+    G_poles, V_poles = build_design_matrix(
+        [cell], None, basis_xy, topology="poles",
+    )
+    assert G_center.shape[1] == G_poles.shape[1] == 5
+    assert G_center.shape[0] == G_poles.shape[0]
+    assert not np.allclose(G_center, G_poles)
