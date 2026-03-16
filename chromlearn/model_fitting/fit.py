@@ -295,7 +295,41 @@ def fit_model(
         lambda_rough=config.lambda_rough,
         R=roughness,
     )
-    D_x = estimate_diffusion(V, G, result.theta, dt=config.dt)
+    # --- Diffusion estimation ---
+    from chromlearn.model_fitting.diffusion import (
+        estimate_diffusion_variable,
+        local_diffusion_estimates,
+    )
+
+    if config.diffusion_mode == "msd":
+        D_x = estimate_diffusion(V, G, result.theta, dt=config.dt)
+    else:
+        # Non-MSD modes operate on raw displacements, not regression residuals
+        D_locals = local_diffusion_estimates(
+            cells, dt=config.dt, mode=config.diffusion_mode,
+            fit_result=result if config.diffusion_mode == "f_corrected" else None,
+            basis_xx=basis_xx if config.diffusion_mode == "f_corrected" else None,
+            basis_xy=basis_xy if config.diffusion_mode == "f_corrected" else None,
+            topology=config.topology,
+        )
+        all_D = np.concatenate([d.ravel() for d in D_locals])
+        valid_D = all_D[np.isfinite(all_D)]
+        D_x = float(np.mean(valid_D)) if valid_D.size > 0 else 0.0
+
+    diffusion_model = None
+    if config.D_variable:
+        BasisClass_D = BSplineBasis if config.basis_type == "bspline" else HatBasis
+        basis_D = BasisClass_D(config.r_min_D, config.r_max_D, config.n_basis_D)
+        diffusion_model = estimate_diffusion_variable(
+            cells, basis_D,
+            coord_name=config.D_coordinate,
+            dt=config.dt,
+            mode=config.diffusion_mode,
+            fit_result=result if config.diffusion_mode == "f_corrected" else None,
+            basis_xx=basis_xx if config.diffusion_mode == "f_corrected" else None,
+            basis_xy=basis_xy if config.diffusion_mode == "f_corrected" else None,
+            topology=config.topology,
+        )
 
     return FittedModel(
         theta=result.theta,
@@ -306,4 +340,6 @@ def fit_model(
         D_x=D_x,
         dt=config.dt,
         metadata={"n_cells": len(cells)},
+        diffusion_model=diffusion_model,
+        topology=config.topology,
     )

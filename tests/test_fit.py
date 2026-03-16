@@ -211,6 +211,62 @@ def test_fit_model_poles_and_chroms() -> None:
     assert model.theta.shape[0] == 8
 
 
+def test_fit_model_preserves_topology() -> None:
+    """fit_model stores config.topology in the returned FittedModel."""
+    cell, _, _, _ = make_synthetic_inference_cell()
+    for topo in ("poles", "center", "poles_and_chroms", "center_and_chroms"):
+        config = FitConfig(
+            topology=topo,
+            n_basis_xx=4, n_basis_xy=4,
+            r_min_xx=0.0, r_max_xx=8.0,
+            r_min_xy=0.0, r_max_xy=10.0,
+            basis_type="hat",
+            lambda_ridge=1e-6, lambda_rough=0.0,
+            dt=0.1,
+        )
+        model = fit_model([cell], config)
+        assert model.topology == topo, f"Expected topology={topo}, got {model.topology}"
+
+
+def test_fit_model_vestergaard_diffusion() -> None:
+    """fit_model honours diffusion_mode='vestergaard'."""
+    cell, _, _, _ = make_synthetic_inference_cell()
+    config_msd = FitConfig(
+        topology="poles", n_basis_xy=4,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat", lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.1, diffusion_mode="msd",
+    )
+    config_vest = FitConfig(
+        topology="poles", n_basis_xy=4,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat", lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.1, diffusion_mode="vestergaard",
+    )
+    model_msd = fit_model([cell], config_msd)
+    model_vest = fit_model([cell], config_vest)
+    # Both should produce positive D, but they use different estimators
+    assert model_msd.D_x > 0
+    assert model_vest.D_x > 0
+    # They should differ (different estimators on the same data)
+    assert model_msd.D_x != model_vest.D_x
+
+
+def test_fit_model_variable_diffusion() -> None:
+    """fit_model with D_variable=True returns a diffusion_model."""
+    cell, _, _, _ = make_synthetic_inference_cell()
+    config = FitConfig(
+        topology="poles", n_basis_xy=4,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat", lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.1, D_variable=True, n_basis_D=4,
+        r_min_D=-5.0, r_max_D=5.0,
+    )
+    model = fit_model([cell], config)
+    assert model.diffusion_model is not None
+    assert model.diffusion_model.d_coeffs.shape == (4,)
+
+
 def test_cross_validate_poles_only() -> None:
     """CV works with topology='poles' (basis_xx=None)."""
     cells = [

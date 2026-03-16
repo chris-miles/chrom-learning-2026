@@ -44,8 +44,9 @@ plt.rcParams["figure.dpi"] = 110
 WINNING_TOPOLOGY = "poles"
 
 CONDITION = "rpe18_ctr"
-cells = load_condition(CONDITION)
-print(f"Loaded {len(cells)} cells for condition '{CONDITION}'.")
+cells_raw = load_condition(CONDITION)
+cells = [trim_trajectory(c, method="midpoint_neb_ao") for c in cells_raw]
+print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to midpoint_neb_ao window).")
 
 BASE_CONFIG = FitConfig(
     topology=WINNING_TOPOLOGY,
@@ -297,25 +298,9 @@ print(f"\nBest estimator mode: {best_mode}  (CV MSE = {cv_mode[best_mode].mean_e
 # %%
 ENDPOINT_METHODS = ["midpoint_neb_ao", "ao_mean", "end_sep"]
 
-# Load the raw CellData so we can re-trim with different methods.
-from chromlearn.io.catalog import load_condition as _load_condition  # noqa: E402
-from chromlearn.io.loader import CellData  # noqa: E402
-
-# load_condition returns TrimmedCell objects; we need raw CellData.
-# Re-load raw cells from the catalog.
-from chromlearn.io.catalog import CONDITIONS, list_cells  # noqa: E402
-from chromlearn.io.loader import load_cell  # noqa: E402
-
-DATA_DIR = ROOT / "data"
-raw_cell_ids = list_cells(CONDITION)
-raw_cells: list[CellData] = []
-for cid in raw_cell_ids:
-    try:
-        raw_cells.append(load_cell(DATA_DIR / f"{cid}.mat"))
-    except Exception as exc:
-        print(f"  Warning: could not load {cid}: {exc}")
-
-print(f"Loaded {len(raw_cells)} raw CellData objects.")
+# Re-use cells_raw (loaded at the top) for re-trimming with different methods.
+raw_cells = cells_raw
+print(f"Using {len(raw_cells)} raw CellData objects for endpoint sweep.")
 
 # %%
 cv_endpoint: dict[str, CVResult] = {}
