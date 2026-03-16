@@ -44,9 +44,11 @@ from chromlearn.model_fitting.basis import BSplineBasis
 from chromlearn.model_fitting.fit import (
     BootstrapResult,
     CVResult,
+    RolloutCVResult,
     bootstrap_kernels,
     cross_validate,
     fit_model,
+    rollout_cross_validate,
 )
 from chromlearn.model_fitting.model import FittedModel
 from chromlearn.model_fitting.plotting import plot_cv_curve, plot_kernels
@@ -69,9 +71,11 @@ for c in cells:
 # - Chromosome-to-partner distances (xy) — depends on topology
 # - Chromosome-to-chromosome distances (xx) — topology-independent
 #
-# The basis domain is set to the [2nd, 98th] percentile of observed distances,
-# clipped so r_min >= 0.3 um (below our tracking resolution) and
-# r_max <= 20 um.
+# For forward simulation, we want the fitted kernels to stay defined across the
+# empirical distance range instead of developing zero-force holes near the
+# origin or truncating the observed long-distance tail.  We therefore anchor
+# the lower limit at 0.3 um (below our tracking resolution) and use the
+# observed maximum distance as the upper limit.
 
 # %%
 TOPOLOGIES = ["poles", "center", "poles_and_chroms", "center_and_chroms"]
@@ -120,11 +124,14 @@ for t in TOPOLOGIES:
 
 
 # %%
-def _domain_from_dists(dists: np.ndarray, lo_pct: float = 2.0, hi_pct: float = 98.0,
-                       r_min_floor: float = 0.3, r_max_ceil: float = 20.0) -> tuple[float, float]:
+def _domain_from_dists(
+    dists: np.ndarray,
+    r_min_floor: float = 0.3,
+    r_max_ceil: float = 20.0,
+) -> tuple[float, float]:
     """Return (r_min, r_max) domain from distance distribution."""
-    r_min = float(np.clip(np.percentile(dists, lo_pct), r_min_floor, r_max_ceil))
-    r_max = float(np.clip(np.percentile(dists, hi_pct), r_min_floor, r_max_ceil))
+    r_min = float(r_min_floor)
+    r_max = float(np.clip(np.max(dists), r_min_floor, r_max_ceil))
     if r_max <= r_min:
         r_max = r_min + 1.0
     return r_min, r_max
@@ -206,7 +213,7 @@ models: dict[str, FittedModel] = {}
 for topology in TOPOLOGIES:
     models[topology] = fit_model(cells, configs[topology])
     m = models[topology]
-    print(f"  {topology:<22}  D_x={m.D_x:.4f} um^2/s  "
+    print(f"  {topology:<22}  D_x={m.D_x:.8f} um^2/s  "
           f"n_params={m.theta.size}")
 
 # %% [markdown]
@@ -221,7 +228,7 @@ cv_results: dict[str, CVResult] = {}
 for topology in TOPOLOGIES:
     cv_results[topology] = cross_validate(cells, configs[topology])
     r = cv_results[topology]
-    print(f"  {topology:<22}  MSE={r.mean_error:.5f} ± {r.std_error:.5f}")
+    print(f"  {topology:<22}  MSE={r.mean_error:.8f} ± {r.std_error:.8f}")
 
 # %%
 fig = plot_cv_curve(cv_results)
@@ -250,9 +257,15 @@ plt.show()
 # Summary printout
 print("\nCV summary (sorted by mean MSE):")
 sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
+best_cv = cv_results[sorted_topo[0]].mean_error
 for rank, topology in enumerate(sorted_topo):
     r = cv_results[topology]
-    print(f"  #{rank + 1}  {topology:<22}  MSE={r.mean_error:.5f}")
+    delta = r.mean_error - best_cv
+    print(f"  #{rank + 1}  {topology:<22}  MSE={r.mean_error:.8f}  "
+          f"(Δbest={delta:+.2e})")
+
+print("\nNote: D_x is estimated from the in-sample residual variance, so "
+      "small fit-quality gaps usually imply small D_x gaps.")
 
 # %% [markdown]
 # ## Bootstrap kernel confidence bands
@@ -261,7 +274,7 @@ for rank, topology in enumerate(sorted_topo):
 # the model.  The shaded band shows the 5–95% bootstrap quantile interval.
 
 # %%
-N_BOOT = 250
+N_BOOT = 50
 boot_rng = np.random.default_rng(42)
 
 print(f"Bootstrapping kernels ({N_BOOT} resamples × 4 topologies)...")
@@ -286,13 +299,14 @@ for topology in TOPOLOGIES:
 # and `center_and_chroms`), we inspect whether the learned kernel is
 # physically sensible:
 #
+# - Sign convention: forces are assembled as `f(r) * (x_j - x_i) / r`, so
+#   positive values are attractive and negative values are repulsive.
 # - **Expected**: a repulsive barrier at short distances (excluded volume,
-#   r ≲ 1 um) and weak or no force at larger distances.
-# - **Red flag**: short-range *attraction* (negative force at small r) is an
-#   artifact of regularization or inadequate data coverage at those distances.
-#   It would cause simulated chromosomes to collapse onto each other.
+#   r ≲ 1 um), i.e. negative `f_xx(r)` at small `r`.
+# - **Red flag**: short-range attraction (positive force at small `r`), which
+#   would pull chromosomes into one another.
 #
-# We flag any model where the minimum of f_xx at r < 1.5 um is negative.
+# We flag any model where f_xx at r < 1.5 um becomes positive.
 
 # %%
 chroms_topologies = [t for t in TOPOLOGIES if t in ("poles_and_chroms", "center_and_chroms")]
@@ -328,14 +342,14 @@ for col, topology in enumerate(chroms_topologies):
 
     # Diagnosis
     short_r_mask = r_probe < SHORT_R_THRESHOLD
-    min_short_r = float(np.min(f_vals[short_r_mask])) if short_r_mask.any() else np.nan
-    if min_short_r < 0:
+    max_short_r = float(np.max(f_vals[short_r_mask])) if short_r_mask.any() else np.nan
+    if max_short_r > 0:
         print(f"  [WARNING] {topology}: f_xx is ATTRACTIVE at short range "
-              f"(min={min_short_r:.4f} at r < {SHORT_R_THRESHOLD} um). "
+              f"(max={max_short_r:.4f} at r < {SHORT_R_THRESHOLD} um). "
               "Likely an artifact — excluded-volume physics expects repulsion here.")
     else:
-        print(f"  [OK] {topology}: f_xx is repulsive at short range "
-              f"(min={min_short_r:.4f} at r < {SHORT_R_THRESHOLD} um).")
+        print(f"  [OK] {topology}: f_xx is repulsive or neutral at short range "
+              f"(max={max_short_r:.4f} at r < {SHORT_R_THRESHOLD} um).")
 
 fig.suptitle("Chromosome-chromosome kernel f_xx — physical plausibility check")
 fig.tight_layout()
@@ -371,216 +385,382 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# ## Forward simulation: real vs simulated trajectories
+# ## Rollout validation: qualitative cells and aggregate holdout scoring
 #
-# We pick the representative cell (index 1) and simulate each model forward
-# from its real initial conditions.  The simulated chromosomes are projected
-# into the real spindle frame (using the cell's actual centrosome positions)
-# and compared to the observed distribution.
+# One-step CV is useful for local velocity prediction, but it does not tell us
+# whether a fitted model generates plausible chromosome trajectories when run
+# forward.  We therefore look at rollout validation in two complementary ways:
 #
-# We run 10 independent noise realisations per model and show the resulting
-# axial/radial distributions as kernel-density-estimate ribbons.
+# 1. A few representative cells with **one simulated rollout per model** to
+#    inspect whether the simulated trajectories qualitatively resemble the real
+#    spindle-frame traces.
+# 2. **Leave-one-cell-out rollout validation** that aggregates across all cells
+#    and scores axial/radial summary trajectories and final-frame
+#    distributions.
 
 # %%
 EXAMPLE_CELL_IDX = 1
-sim_rng = np.random.default_rng(7)
-N_SIM_REPS = 10
-
 example_cell = cells[EXAMPLE_CELL_IDX]
 T, _, N_chrom = example_cell.chromosomes.shape
 n_steps = T - 1
-x0 = example_cell.chromosomes[0].T  # (N, 3) — initial positions
-
-# Real spindle-frame coordinates
+x0 = example_cell.chromosomes[0].T
 sf_real = spindle_frame(example_cell)
 
-print(f"Simulating {len(TOPOLOGIES)} models × {N_SIM_REPS} realisations on "
-      f"{example_cell.cell_id} ({T} frames, {N_chrom} chromosomes)...")
+QUAL_CELL_IDXS = sorted({0, len(cells) // 2, len(cells) - 1})
+QUAL_N_TRACES = 6
+ROLLOUT_REPS = 4
+ROLLOUT_HORIZONS = (1, 5, 10, 20)
 
-sim_sf: dict[str, list] = {t: [] for t in TOPOLOGIES}
 
-for topology in TOPOLOGIES:
-    m = models[topology]
+def _kernel_xy_for_sim(model):
+    def _f(r):
+        return model.evaluate_kernel("xy", r)
+    return _f
 
-    # Build kernel callables
-    def make_kernel_xy(model):
-        def _f(r):
-            return model.evaluate_kernel("xy", r)
-        return _f
 
-    def make_kernel_xx(model):
-        if model.basis_xx is None:
-            return None
-        def _f(r):
-            return model.evaluate_kernel("xx", r)
-        return _f
+def _kernel_xx_for_sim(model):
+    if model.basis_xx is None:
+        return None
 
-    kernel_xy = make_kernel_xy(m)
-    kernel_xx = make_kernel_xx(m)
+    def _f(r):
+        return model.evaluate_kernel("xx", r)
+    return _f
 
-    # Partner positions for simulation
-    partners = get_partners(example_cell, topology)  # (n_p, T, 3)
 
-    for rep in range(N_SIM_REPS):
-        traj = simulate_trajectories(
-            kernel_xx=kernel_xx,
-            kernel_xy=kernel_xy,
-            partner_positions=partners,
-            x0=x0,
-            n_steps=n_steps,
-            dt=example_cell.dt,
-            D_x=m.D_x,
-            rng=sim_rng,
-        )  # (T, 3, N)
+def _simulate_cell_once(cell: TrimmedCell, model: FittedModel, seed: int):
+    partners = get_partners(cell, model.topology)
+    traj = simulate_trajectories(
+        kernel_xx=_kernel_xx_for_sim(model),
+        kernel_xy=_kernel_xy_for_sim(model),
+        partner_positions=partners,
+        x0=cell.chromosomes[0].T,
+        n_steps=cell.chromosomes.shape[0] - 1,
+        dt=cell.dt,
+        D_x=model.D_x,
+        rng=np.random.default_rng(seed),
+    )
+    sim_cell = TrimmedCell(
+        cell_id=cell.cell_id,
+        condition=cell.condition,
+        centrioles=cell.centrioles,
+        chromosomes=traj,
+        tracked=cell.tracked,
+        dt=cell.dt,
+        start_frame=cell.start_frame,
+        end_frame=cell.end_frame,
+    )
+    return traj, spindle_frame(sim_cell)
 
-        # Build a temporary TrimmedCell to use spindle_frame()
-        sim_cell = TrimmedCell(
-            cell_id=example_cell.cell_id,
-            condition=example_cell.condition,
-            centrioles=example_cell.centrioles,
-            chromosomes=traj,
-            tracked=N_chrom,
-            dt=example_cell.dt,
-            start_frame=example_cell.start_frame,
-            end_frame=example_cell.end_frame,
-        )
-        sf_sim = spindle_frame(sim_cell)
-        sim_sf[topology].append(sf_sim)
 
-    print(f"  {topology} done.")
+def _representative_trace_indices(sf_data, n_traces: int) -> np.ndarray:
+    valid = np.flatnonzero(
+        np.all(np.isfinite(sf_data.axial), axis=0)
+        & np.all(np.isfinite(sf_data.radial), axis=0)
+    )
+    if valid.size == 0:
+        return valid
+    if valid.size <= n_traces:
+        return valid
+
+    # Spread displayed traces across the initial radial distribution so the
+    # thin-line examples are less biased than "first N valid chromosomes".
+    radial0 = sf_data.radial[0, valid]
+    order = valid[np.argsort(radial0)]
+    positions = np.linspace(0, order.size - 1, n_traces, dtype=int)
+    return order[positions]
+
+
+def _interp_to_unit_grid(values: np.ndarray, n_grid: int = 100) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    if values.size == 0:
+        return np.full(n_grid, np.nan, dtype=np.float64)
+    if values.size == 1:
+        return np.full(n_grid, values[0], dtype=np.float64)
+    src = np.linspace(0.0, 1.0, values.size)
+    dst = np.linspace(0.0, 1.0, n_grid)
+    return np.interp(dst, src, values)
+
+
+print("Qualitative rollout check on representative cells (1 rollout per model)...")
+for cell_idx in QUAL_CELL_IDXS:
+    cell = cells[cell_idx]
+    sf_cell_real = spindle_frame(cell)
+    time_axis = np.arange(cell.chromosomes.shape[0]) * cell.dt
+    trace_idx = _representative_trace_indices(sf_cell_real, QUAL_N_TRACES)
+
+    fig, axes = plt.subplots(2, len(TOPOLOGIES), figsize=(5 * len(TOPOLOGIES), 7), squeeze=False)
+    print(f"  {cell.cell_id}: {cell.chromosomes.shape[0]} frames, {cell.chromosomes.shape[2]} chromosomes")
+
+    for col, topology in enumerate(TOPOLOGIES):
+        sim_seed = 1000 + 100 * cell_idx + col
+        _traj, sf_sim = _simulate_cell_once(cell, models[topology], seed=sim_seed)
+
+        ax_axial = axes[0, col]
+        ax_radial = axes[1, col]
+        color = f"C{col}"
+
+        for chrom_idx in trace_idx:
+            ax_axial.plot(time_axis, sf_cell_real.axial[:, chrom_idx], color="k", alpha=0.15, linewidth=0.8)
+            ax_axial.plot(time_axis, sf_sim.axial[:, chrom_idx], color=color, alpha=0.18, linewidth=0.8)
+            ax_radial.plot(time_axis, sf_cell_real.radial[:, chrom_idx], color="k", alpha=0.15, linewidth=0.8)
+            ax_radial.plot(time_axis, sf_sim.radial[:, chrom_idx], color=color, alpha=0.18, linewidth=0.8)
+
+        real_axial_subset_mean = np.nanmean(sf_cell_real.axial[:, trace_idx], axis=1)
+        sim_axial_subset_mean = np.nanmean(sf_sim.axial[:, trace_idx], axis=1)
+        real_radial_subset_mean = np.nanmean(sf_cell_real.radial[:, trace_idx], axis=1)
+        sim_radial_subset_mean = np.nanmean(sf_sim.radial[:, trace_idx], axis=1)
+
+        ax_axial.plot(time_axis, real_axial_subset_mean, "k-", linewidth=2.0, label="Displayed real mean")
+        ax_axial.plot(time_axis, sim_axial_subset_mean, color=color, linestyle="--", linewidth=2.0,
+                      label="Displayed rollout mean")
+        ax_radial.plot(time_axis, real_radial_subset_mean, "k-", linewidth=2.0, label="Displayed real mean")
+        ax_radial.plot(time_axis, sim_radial_subset_mean, color=color, linestyle="--", linewidth=2.0,
+                       label="Displayed rollout mean")
+
+        ax_axial.set_title(f"Axial — {topology}", fontsize=9)
+        ax_radial.set_title(f"Radial — {topology}", fontsize=9)
+        ax_axial.set_xlabel("Time (s)")
+        ax_radial.set_xlabel("Time (s)")
+        if col == 0:
+            ax_axial.set_ylabel("Axial position (um)")
+            ax_radial.set_ylabel("Radial distance (um)")
+        ax_axial.legend(fontsize=7)
+        ax_radial.legend(fontsize=7)
+
+    fig.suptitle(f"Single-rollout qualitative check — {cell.cell_id}\n"
+                 "Thin lines = representative chromosome traces, thick lines = means of displayed traces")
+    fig.tight_layout()
+    plt.show()
+
 
 # %%
-# Plot: mean axial and radial position over time — real vs simulated
-fig, axes = plt.subplots(2, len(TOPOLOGIES), figsize=(5 * len(TOPOLOGIES), 8), squeeze=False)
-time_axis = np.arange(T) * example_cell.dt
+AGG_NORM_GRID = 100
+print("Aggregating full-data forward simulations across all cells...")
 
+agg_real_axial = []
+agg_real_radial = []
+agg_sim_axial: dict[str, list[np.ndarray]] = {t: [] for t in TOPOLOGIES}
+agg_sim_radial: dict[str, list[np.ndarray]] = {t: [] for t in TOPOLOGIES}
+
+for cell_idx, cell in enumerate(cells):
+    sf_cell_real = spindle_frame(cell)
+    agg_real_axial.append(_interp_to_unit_grid(np.nanmean(sf_cell_real.axial, axis=1), n_grid=AGG_NORM_GRID))
+    agg_real_radial.append(_interp_to_unit_grid(np.nanmean(sf_cell_real.radial, axis=1), n_grid=AGG_NORM_GRID))
+
+    for topo_index, topology in enumerate(TOPOLOGIES):
+        _traj, sf_sim = _simulate_cell_once(
+            cell,
+            models[topology],
+            seed=10_000 + 100 * cell_idx + topo_index,
+        )
+        agg_sim_axial[topology].append(
+            _interp_to_unit_grid(np.nanmean(sf_sim.axial, axis=1), n_grid=AGG_NORM_GRID)
+        )
+        agg_sim_radial[topology].append(
+            _interp_to_unit_grid(np.nanmean(sf_sim.radial, axis=1), n_grid=AGG_NORM_GRID)
+        )
+
+agg_real_axial = np.stack(agg_real_axial, axis=0)
+agg_real_radial = np.stack(agg_real_radial, axis=0)
+norm_time = np.linspace(0.0, 1.0, AGG_NORM_GRID)
+
+fig, axes = plt.subplots(2, len(TOPOLOGIES), figsize=(5 * len(TOPOLOGIES), 7), squeeze=False)
 for col, topology in enumerate(TOPOLOGIES):
     ax_axial = axes[0, col]
     ax_radial = axes[1, col]
 
-    # Real data
-    real_axial_mean = np.nanmean(sf_real.axial, axis=1)  # (T,)
-    real_axial_std = np.nanstd(sf_real.axial, axis=1)
-    real_radial_mean = np.nanmean(sf_real.radial, axis=1)
-    real_radial_std = np.nanstd(sf_real.radial, axis=1)
+    sim_axial_stack = np.stack(agg_sim_axial[topology], axis=0)
+    sim_radial_stack = np.stack(agg_sim_radial[topology], axis=0)
 
-    ax_axial.plot(time_axis, real_axial_mean, "k-", linewidth=2, label="Real")
-    ax_axial.fill_between(time_axis,
-                          real_axial_mean - real_axial_std,
-                          real_axial_mean + real_axial_std,
-                          color="k", alpha=0.12)
+    real_axial_mean = np.nanmean(agg_real_axial, axis=0)
+    real_axial_std = np.nanstd(agg_real_axial, axis=0)
+    real_radial_mean = np.nanmean(agg_real_radial, axis=0)
+    real_radial_std = np.nanstd(agg_real_radial, axis=0)
 
-    ax_radial.plot(time_axis, real_radial_mean, "k-", linewidth=2, label="Real")
-    ax_radial.fill_between(time_axis,
-                           real_radial_mean - real_radial_std,
-                           real_radial_mean + real_radial_std,
-                           color="k", alpha=0.12)
-
-    # Simulated realisations
-    sim_axial_stack = np.stack(
-        [np.nanmean(s.axial, axis=1) for s in sim_sf[topology]], axis=0
-    )  # (N_SIM_REPS, T)
-    sim_radial_stack = np.stack(
-        [np.nanmean(s.radial, axis=1) for s in sim_sf[topology]], axis=0
-    )
-
-    sim_ax_med = np.median(sim_axial_stack, axis=0)
-    sim_ax_lo = np.percentile(sim_axial_stack, 10, axis=0)
-    sim_ax_hi = np.percentile(sim_axial_stack, 90, axis=0)
-
-    sim_rad_med = np.median(sim_radial_stack, axis=0)
-    sim_rad_lo = np.percentile(sim_radial_stack, 10, axis=0)
-    sim_rad_hi = np.percentile(sim_radial_stack, 90, axis=0)
+    sim_axial_mean = np.nanmean(sim_axial_stack, axis=0)
+    sim_axial_std = np.nanstd(sim_axial_stack, axis=0)
+    sim_radial_mean = np.nanmean(sim_radial_stack, axis=0)
+    sim_radial_std = np.nanstd(sim_radial_stack, axis=0)
 
     color = f"C{col}"
-    ax_axial.plot(time_axis, sim_ax_med, color=color, linewidth=1.8, linestyle="--",
-                  label="Simulated")
-    ax_axial.fill_between(time_axis, sim_ax_lo, sim_ax_hi, color=color, alpha=0.2)
+    ax_axial.plot(norm_time, real_axial_mean, "k-", linewidth=2.0, label="Real mean")
+    ax_axial.fill_between(
+        norm_time,
+        real_axial_mean - real_axial_std,
+        real_axial_mean + real_axial_std,
+        color="k",
+        alpha=0.12,
+    )
+    ax_axial.plot(norm_time, sim_axial_mean, color=color, linestyle="--", linewidth=2.0, label="Sim mean")
+    ax_axial.fill_between(
+        norm_time,
+        sim_axial_mean - sim_axial_std,
+        sim_axial_mean + sim_axial_std,
+        color=color,
+        alpha=0.18,
+    )
 
-    ax_radial.plot(time_axis, sim_rad_med, color=color, linewidth=1.8, linestyle="--",
-                   label="Simulated")
-    ax_radial.fill_between(time_axis, sim_rad_lo, sim_rad_hi, color=color, alpha=0.2)
+    ax_radial.plot(norm_time, real_radial_mean, "k-", linewidth=2.0, label="Real mean")
+    ax_radial.fill_between(
+        norm_time,
+        real_radial_mean - real_radial_std,
+        real_radial_mean + real_radial_std,
+        color="k",
+        alpha=0.12,
+    )
+    ax_radial.plot(norm_time, sim_radial_mean, color=color, linestyle="--", linewidth=2.0, label="Sim mean")
+    ax_radial.fill_between(
+        norm_time,
+        sim_radial_mean - sim_radial_std,
+        sim_radial_mean + sim_radial_std,
+        color=color,
+        alpha=0.18,
+    )
 
     ax_axial.set_title(f"Axial — {topology}", fontsize=9)
     ax_radial.set_title(f"Radial — {topology}", fontsize=9)
-    ax_axial.set_xlabel("Time (s)")
-    ax_radial.set_xlabel("Time (s)")
+    ax_axial.set_xlabel("Normalized progress through trimmed window")
+    ax_radial.set_xlabel("Normalized progress through trimmed window")
     if col == 0:
         ax_axial.set_ylabel("Mean axial position (um)")
         ax_radial.set_ylabel("Mean radial distance (um)")
     ax_axial.legend(fontsize=7)
     ax_radial.legend(fontsize=7)
 
-fig.suptitle(f"Forward simulation — {example_cell.cell_id}\n"
-             "Mean chromosome position in spindle frame (real=black, simulated=color)")
+fig.suptitle("Aggregate forward simulation across all cells\n"
+             "Real initial conditions and pole trajectories, normalized in time")
 fig.tight_layout()
 plt.show()
 
+
 # %%
-# Scatter: axial vs radial distribution at final timepoint — real vs simulated
-fig, axes = plt.subplots(1, len(TOPOLOGIES) + 1, figsize=(4 * (len(TOPOLOGIES) + 1), 4.5),
-                          squeeze=False)
+print("Running leave-one-cell-out rollout validation "
+      f"({len(TOPOLOGIES)} topologies × {len(cells)} folds × {ROLLOUT_REPS} rollouts)...")
+rollout_results: dict[str, RolloutCVResult] = {}
+for topo_index, topology in enumerate(TOPOLOGIES):
+    rollout_results[topology] = rollout_cross_validate(
+        cells,
+        configs[topology],
+        n_reps=ROLLOUT_REPS,
+        horizons=ROLLOUT_HORIZONS,
+        rng=np.random.default_rng(200 + topo_index),
+        clip_to_domain=False,
+    )
+    rr = rollout_results[topology]
+    print(f"  {topology:<22}  axial_MSE={rr.mean_axial_mse:.5f}  "
+          f"radial_MSE={rr.mean_radial_mse:.5f}  "
+          f"endpoint_MSE={rr.mean_endpoint_mean_error:.5f}  "
+          f"final_W1(ax,rad)=({rr.mean_final_axial_wasserstein:.4f}, "
+          f"{rr.mean_final_radial_wasserstein:.4f})")
 
-# Real data at final frame
-real_axial_t = sf_real.axial[-1]   # (N,)
-real_radial_t = sf_real.radial[-1]
 
-ax0 = axes[0, 0]
-valid = np.isfinite(real_axial_t) & np.isfinite(real_radial_t)
-ax0.scatter(real_axial_t[valid], real_radial_t[valid], s=20, alpha=0.8, color="k")
-ax0.set_title("Real (final frame)", fontsize=9)
-ax0.set_xlabel("Axial (um)")
-ax0.set_ylabel("Radial (um)")
+# %%
+rollout_time_score = {
+    topology: rollout_results[topology].mean_axial_mse + rollout_results[topology].mean_radial_mse
+    for topology in TOPOLOGIES
+}
+rollout_endpoint_score = {
+    topology: rollout_results[topology].mean_endpoint_mean_error
+    for topology in TOPOLOGIES
+}
+rollout_dist_score = {
+    topology: (
+        rollout_results[topology].mean_final_axial_wasserstein
+        + rollout_results[topology].mean_final_radial_wasserstein
+    )
+    for topology in TOPOLOGIES
+}
 
-for col, topology in enumerate(TOPOLOGIES):
-    ax = axes[0, col + 1]
-    # Pool all realisations at final frame
-    for rep_idx, sf_sim_rep in enumerate(sim_sf[topology]):
-        ax_vals = sf_sim_rep.axial[-1]
-        rad_vals = sf_sim_rep.radial[-1]
-        valid = np.isfinite(ax_vals) & np.isfinite(rad_vals)
-        ax.scatter(ax_vals[valid], rad_vals[valid], s=10, alpha=0.4, color=f"C{col}")
-    ax.set_title(f"{topology}\n(final frame, {N_SIM_REPS} reps)", fontsize=9)
-    ax.set_xlabel("Axial (um)")
-    ax.set_ylabel("Radial (um)")
+fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+x = np.arange(len(TOPOLOGIES))
 
-fig.suptitle(f"Chromosome spatial distribution at final frame — {example_cell.cell_id}")
+axes[0].bar(x, [rollout_time_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
+axes[0].set_ylabel("Mean rollout trajectory error (um^2)")
+axes[0].set_title("LOOCV rollout score\n(axial MSE + radial MSE)")
+
+axes[1].bar(x, [rollout_endpoint_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[1].set_xticks(x)
+axes[1].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
+axes[1].set_ylabel("Endpoint mean error (um^2)")
+axes[1].set_title("LOOCV endpoint-only score\n(final axial/radial mean mismatch)")
+
+axes[2].bar(x, [rollout_dist_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[2].set_xticks(x)
+axes[2].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
+axes[2].set_ylabel("Final-frame W1 distance (um)")
+axes[2].set_title("LOOCV final distribution mismatch\n(axial W1 + radial W1)")
+
+for topo_index, topology in enumerate(TOPOLOGIES):
+    axes[3].plot(
+        rollout_results[topology].horizons,
+        rollout_results[topology].mean_horizon_errors,
+        marker="o",
+        linewidth=1.8,
+        label=topology,
+    )
+axes[3].set_xlabel("Forecast horizon (frames)")
+axes[3].set_ylabel("Combined axial/radial error (um^2)")
+axes[3].set_title("Held-out forecast error vs horizon")
+axes[3].legend(fontsize=8)
+
+fig.suptitle("Aggregate rollout validation across held-out cells")
 fig.tight_layout()
 plt.show()
 
-# %% [markdown]
-# ## Verdict: model selection summary
-#
-# We now compile the CV scores, plausibility flags, and simulation quality
-# into a summary table and pick the best model.
+sorted_topo_endpoint = sorted(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
 
 # %%
-print("=" * 70)
-print(f"{'Topology':<24} {'CV MSE':>10} {'Rank':>5} {'D_x (um^2/s)':>14} {'n_params':>9}")
-print("-" * 70)
+print("=" * 112)
+print(f"{'Topology':<22} {'CV MSE':>12} {'Δbest':>10} {'Rollout':>10} {'Endpoint':>10} {'Final W1':>10} {'Rank':>5} {'D_x':>12} {'n_params':>9}")
+print("-" * 112)
 
 sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
+best_cv = cv_results[sorted_topo[0]].mean_error
+sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_time_score[t])
 for rank, topology in enumerate(sorted_topo):
     r = cv_results[topology]
     m = models[topology]
-    print(f"  {topology:<22} {r.mean_error:>10.5f} {rank + 1:>5} {m.D_x:>14.4f} {m.theta.size:>9}")
+    delta = r.mean_error - best_cv
+    print(f"  {topology:<22} {r.mean_error:>12.8f} {delta:>+10.2e} "
+          f"{rollout_time_score[topology]:>10.4f} {rollout_endpoint_score[topology]:>10.4f} "
+          f"{rollout_dist_score[topology]:>10.4f} {rank + 1:>5} {m.D_x:>12.8f} {m.theta.size:>9}")
 
-print("=" * 70)
+print("=" * 112)
 
 best_topology = sorted_topo[0]
-print(f"\nSelected topology: {best_topology}")
-print(f"  CV MSE = {cv_results[best_topology].mean_error:.5f}")
-print(f"  D_x    = {models[best_topology].D_x:.4f} um^2/s")
+best_topology_rollout = sorted_topo_rollout[0]
+best_topology_endpoint = sorted_topo_endpoint[0]
+print(f"\n1-step CV winner: {best_topology}")
+print(f"  CV MSE          = {cv_results[best_topology].mean_error:.8f}")
+print(f"  Rollout score   = {rollout_time_score[best_topology]:.5f}")
+print(f"  Endpoint score  = {rollout_endpoint_score[best_topology]:.5f}")
+print(f"  Final W1 score  = {rollout_dist_score[best_topology]:.5f}")
+print(f"  D_x             = {models[best_topology].D_x:.8f} um^2/s")
+
+print(f"\nRollout winner: {best_topology_rollout}")
+print(f"  Rollout score   = {rollout_time_score[best_topology_rollout]:.5f}")
+print(f"  Endpoint score  = {rollout_endpoint_score[best_topology_rollout]:.5f}")
+print(f"  Final W1 score  = {rollout_dist_score[best_topology_rollout]:.5f}")
+print(f"  CV MSE          = {cv_results[best_topology_rollout].mean_error:.8f}")
+
+print(f"\nEndpoint winner: {best_topology_endpoint}")
+print(f"  Endpoint score  = {rollout_endpoint_score[best_topology_endpoint]:.5f}")
+print(f"  Rollout score   = {rollout_time_score[best_topology_endpoint]:.5f}")
+print(f"  Final W1 score  = {rollout_dist_score[best_topology_endpoint]:.5f}")
+print(f"  CV MSE          = {cv_results[best_topology_endpoint].mean_error:.8f}")
 print()
 print("Notes:")
 print("  - 'poles' and 'center' differ in whether both poles or only their")
 print("    midpoint enter the xy kernel.  'center' has half the partner count")
 print("    and a sparser design matrix.")
 print("  - 'poles_and_chroms' / 'center_and_chroms' add a chromosome-chromosome")
-print("    term f_xx.  This roughly doubles parameter count.  CV penalises")
-print("    overfitting, so improvement must be robust to be preferred.")
-print("  - If CV scores are similar (< 5% difference), the simpler model")
-print("    (poles or center) is preferred on parsimony grounds.")
+print("    term f_xx.  This roughly doubles parameter count and should help only")
+print("    if it improves both local prediction and multi-step rollout behavior.")
+print("  - Use rollout metrics for simulation realism; use 1-step CV for local")
+print("    velocity prediction.  If they disagree, the model is fitting local")
+print("    drift better than it reproduces held-out trajectory structure.")
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")

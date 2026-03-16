@@ -52,39 +52,45 @@ def simulate_trajectories(
         rng = np.random.default_rng()
 
     n_chromosomes = x0.shape[0]
-    n_partners = partner_positions.shape[0]
     trajectory = np.zeros((n_steps + 1, 3, n_chromosomes), dtype=np.float64)
     trajectory[0] = x0.T
     noise_scale = np.sqrt(2.0 * D_x * dt)
 
     for step in range(n_steps):
-        positions = trajectory[step]
+        # Work in (N, 3) layout for vectorized pairwise arithmetic.
+        positions = trajectory[step].T
         forces = np.zeros_like(positions)
 
-        for chrom_index in range(n_chromosomes):
-            current = positions[:, chrom_index]
+        if kernel_xx is not None:
+            delta_xx = positions[np.newaxis, :, :] - positions[:, np.newaxis, :]
+            dist_xx = np.linalg.norm(delta_xx, axis=2)
+            pair_mask_xx = dist_xx > 1e-12
+            safe_dist_xx = np.where(pair_mask_xx, dist_xx, 1.0)
+            direction_xx = delta_xx / safe_dist_xx[:, :, np.newaxis]
+            direction_xx[~pair_mask_xx] = 0.0
 
-            if kernel_xx is not None:
-                for neighbor_index in range(n_chromosomes):
-                    if neighbor_index == chrom_index:
-                        continue
-                    delta = positions[:, neighbor_index] - current
-                    distance = float(np.linalg.norm(delta))
-                    if distance <= 1e-12:
-                        continue
-                    direction = delta / distance
-                    forces[:, chrom_index] += kernel_xx(np.array([distance]))[0] * direction
+            f_xx = np.zeros_like(dist_xx)
+            if pair_mask_xx.any():
+                f_xx[pair_mask_xx] = kernel_xx(dist_xx[pair_mask_xx])
+            forces += np.sum(direction_xx * f_xx[:, :, np.newaxis], axis=1)
 
-            for partner_index in range(n_partners):
-                delta = partner_positions[partner_index, step] - current
-                distance = float(np.linalg.norm(delta))
-                if distance <= 1e-12:
-                    continue
-                direction = delta / distance
-                forces[:, chrom_index] += kernel_xy(np.array([distance]))[0] * direction
+        partners_t = partner_positions[:, step, :]
+        delta_xy = partners_t[np.newaxis, :, :] - positions[:, np.newaxis, :]
+        dist_xy = np.linalg.norm(delta_xy, axis=2)
+        pair_mask_xy = dist_xy > 1e-12
+        safe_dist_xy = np.where(pair_mask_xy, dist_xy, 1.0)
+        direction_xy = delta_xy / safe_dist_xy[:, :, np.newaxis]
+        direction_xy[~pair_mask_xy] = 0.0
 
-        noise = noise_scale * rng.standard_normal(size=(3, n_chromosomes))
-        trajectory[step + 1] = positions + forces * dt + noise
+        f_xy = np.zeros_like(dist_xy)
+        if pair_mask_xy.any():
+            f_xy[pair_mask_xy] = kernel_xy(dist_xy[pair_mask_xy])
+        forces += np.sum(direction_xy * f_xy[:, :, np.newaxis], axis=1)
+
+        # Preserve the historical RNG draw order from the original
+        # implementation, which sampled in (3, N) layout.
+        noise = noise_scale * rng.standard_normal(size=(3, n_chromosomes)).T
+        trajectory[step + 1] = (positions + forces * dt + noise).T
 
     return trajectory
 
