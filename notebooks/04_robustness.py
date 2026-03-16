@@ -441,13 +441,6 @@ D_scalar_by_mode: dict[str, float] = {}
 
 for diff_mode in DIFFUSION_MODES:
     if diff_mode == "f_corrected":
-        if _basis_xx_fc is None:
-            # f_corrected needs basis_xx; for topologies without it, skip gracefully.
-            print(
-                "  f_corrected: skipping because topology has no chrom-chrom kernel "
-                "(basis_xx is None)."
-            )
-            continue
         d_estimates = local_diffusion_estimates(
             cells,
             dt=BASE_CONFIG.dt,
@@ -455,6 +448,7 @@ for diff_mode in DIFFUSION_MODES:
             fit_result=_fit_result_fc,
             basis_xx=_basis_xx_fc,
             basis_xy=_basis_xy_fc,
+            topology=BASE_CONFIG.topology,
         )
     else:
         d_estimates = local_diffusion_estimates(

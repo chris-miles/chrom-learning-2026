@@ -5,7 +5,7 @@ from typing import Callable
 
 import numpy as np
 
-from chromlearn.io.trajectory import TrimmedCell, pole_center
+from chromlearn.io.trajectory import TrimmedCell, get_partners, pole_center
 from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
 
 
@@ -93,21 +93,26 @@ def _predicted_force(
     fit_result,
     basis_xx,
     basis_xy,
+    topology: str = "poles",
 ) -> np.ndarray:
     """Compute predicted force vectors at one timepoint for all chromosomes.
+
+    Uses ``get_partners`` to determine the partner array for the given
+    topology, so ``"center"`` topologies correctly evaluate against the
+    pole midpoint rather than individual poles.
 
     Returns:
         Array of shape ``(N, 3)`` with the predicted force (velocity) for each
         chromosome at the given timepoint.
     """
     chromosomes = cell.chromosomes  # (T, 3, N)
-    centrioles = cell.centrioles    # (T, 3, 2)
     n_chromosomes = chromosomes.shape[2]
     theta = fit_result.theta
-    n_xx = basis_xx.n_basis
+    n_xx = basis_xx.n_basis if basis_xx is not None else 0
 
     positions = chromosomes[time_index].T   # (N, 3)
-    poles = centrioles[time_index].T        # (2, 3)
+    partners = get_partners(cell, topology)  # (n_partners, T, 3)
+    partner_pos = partners[:, time_index]    # (n_partners, 3)
 
     forces = np.full((n_chromosomes, 3), np.nan, dtype=np.float64)
     for i in range(n_chromosomes):
@@ -115,30 +120,32 @@ def _predicted_force(
         if np.any(np.isnan(pos_i)):
             continue
 
-        # chromosome-chromosome interactions
         force_vec = np.zeros(3, dtype=np.float64)
-        for j in range(n_chromosomes):
-            if j == i:
-                continue
-            pos_j = positions[j]
-            if np.any(np.isnan(pos_j)):
-                continue
-            delta = pos_j - pos_i
-            dist = float(np.linalg.norm(delta))
-            if dist <= 1e-12:
-                continue
-            direction = delta / dist
-            phi = basis_xx.evaluate(np.array([dist]))[0]  # (n_basis_xx,)
-            force_vec += direction * (phi @ theta[:n_xx])
 
-        # chromosome-pole interactions
-        for p in range(2):
-            delta = poles[p] - pos_i
+        # chromosome-chromosome interactions (skip if basis_xx is None)
+        if basis_xx is not None:
+            for j in range(n_chromosomes):
+                if j == i:
+                    continue
+                pos_j = positions[j]
+                if np.any(np.isnan(pos_j)):
+                    continue
+                delta = pos_j - pos_i
+                dist = float(np.linalg.norm(delta))
+                if dist <= 1e-12:
+                    continue
+                direction = delta / dist
+                phi = basis_xx.evaluate(np.array([dist]))[0]
+                force_vec += direction * (phi @ theta[:n_xx])
+
+        # chromosome-partner interactions
+        for p in range(partner_pos.shape[0]):
+            delta = partner_pos[p] - pos_i
             dist = float(np.linalg.norm(delta))
             if dist <= 1e-12:
                 continue
             direction = delta / dist
-            phi = basis_xy.evaluate(np.array([dist]))[0]  # (n_basis_xy,)
+            phi = basis_xy.evaluate(np.array([dist]))[0]
             force_vec += direction * (phi @ theta[n_xx:])
 
         forces[i] = force_vec
@@ -153,6 +160,7 @@ def local_diffusion_estimates(
     fit_result=None,
     basis_xx=None,
     basis_xy=None,
+    topology: str = "poles",
 ) -> list[np.ndarray]:
     """Compute per-particle, per-timepoint local diffusion estimates.
 
@@ -163,10 +171,13 @@ def local_diffusion_estimates(
             or ``"f_corrected"``.
         fit_result: Required for ``"f_corrected"`` mode.  A :class:`FitResult`
             (or :class:`FittedModel`) with ``theta`` attribute.
-        basis_xx: Basis for chromosome-chromosome kernel (required for
+        basis_xx: Basis for chromosome-chromosome kernel.  ``None`` is valid
+            for topologies without chromosome-chromosome interactions.
+        basis_xy: Basis for chromosome-partner kernel (required for
             ``"f_corrected"``).
-        basis_xy: Basis for chromosome-pole kernel (required for
-            ``"f_corrected"``).
+        topology: Interaction topology (``"poles"``, ``"center"``, etc.).
+            Determines which partners are used when computing predicted forces
+            in ``"f_corrected"`` mode.
 
     Returns:
         List (one per cell) of arrays with shape ``(T_valid, N)`` containing
@@ -178,9 +189,9 @@ def local_diffusion_estimates(
     """
     d = 3  # spatial dimension
 
-    if mode == "f_corrected" and (fit_result is None or basis_xx is None or basis_xy is None):
+    if mode == "f_corrected" and (fit_result is None or basis_xy is None):
         raise ValueError(
-            "f_corrected mode requires fit_result, basis_xx, and basis_xy."
+            "f_corrected mode requires fit_result and basis_xy."
         )
 
     if mode not in ("msd", "vestergaard", "weak_noise", "f_corrected"):
@@ -235,7 +246,7 @@ def local_diffusion_estimates(
             dX_all = np.diff(chromosomes, axis=0)  # (T-1, 3, N)
             D = np.full((T - 1, N), np.nan, dtype=np.float64)
             for t in range(T - 1):
-                forces = _predicted_force(cell, t, fit_result, basis_xx, basis_xy)
+                forces = _predicted_force(cell, t, fit_result, basis_xx, basis_xy, topology=topology)
                 # forces: (N, 3), dX_all[t]: (3, N)
                 residual = dX_all[t] - (forces.T * dt)  # (3, N)
                 D[t] = np.sum(residual ** 2, axis=0) / (2.0 * d * dt)
@@ -292,6 +303,7 @@ def estimate_diffusion_variable(
     basis_xx=None,
     basis_xy=None,
     lambda_ridge: float = 1e-3,
+    topology: str = "poles",
 ) -> DiffusionResult:
     """Fit a spatially-varying diffusion coefficient D(coordinate).
 
@@ -308,9 +320,12 @@ def estimate_diffusion_variable(
         dt: Time step in seconds.
         mode: Local estimator mode; see :func:`local_diffusion_estimates`.
         fit_result: Needed for ``"f_corrected"`` mode.
-        basis_xx: Needed for ``"f_corrected"`` mode.
+        basis_xx: Needed for ``"f_corrected"`` mode (``None`` is valid for
+            topologies without chromosome-chromosome interactions).
         basis_xy: Needed for ``"f_corrected"`` mode.
         lambda_ridge: Ridge regularisation strength for the D regression.
+        topology: Interaction topology passed through to
+            :func:`local_diffusion_estimates`.
 
     Returns:
         :class:`DiffusionResult` with fitted coefficients and scalar summary.
@@ -332,6 +347,7 @@ def estimate_diffusion_variable(
         fit_result=fit_result,
         basis_xx=basis_xx,
         basis_xy=basis_xy,
+        topology=topology,
     )
 
     # Step 2–3: collect valid (coordinate, D) pairs

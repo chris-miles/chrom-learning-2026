@@ -304,6 +304,55 @@ def test_f_corrected_requires_fit_result() -> None:
         local_diffusion_estimates([cell], dt=5.0, mode="f_corrected")
 
 
+def test_f_corrected_works_with_basis_xx_none() -> None:
+    """f_corrected should work for poles-only topology (basis_xx=None)."""
+    cell, _basis_xx, basis_xy, theta_true, D_true = make_force_corrected_diffusion_cell()
+    # Use only the xy portion of theta (no xx interactions)
+    theta_xy_only = theta_true[_basis_xx.n_basis:]
+    D_local = local_diffusion_estimates(
+        [cell],
+        dt=cell.dt,
+        mode="f_corrected",
+        fit_result=SimpleNamespace(theta=theta_xy_only),
+        basis_xx=None,
+        basis_xy=basis_xy,
+        topology="poles",
+    )
+    assert len(D_local) == 1
+    assert D_local[0].shape[1] == cell.chromosomes.shape[2]
+    # Should produce finite values
+    assert np.any(np.isfinite(D_local[0]))
+
+
+def test_f_corrected_center_topology() -> None:
+    """f_corrected with center topology uses pole midpoint, not individual poles."""
+    cell, _basis_xx, basis_xy, theta_true, D_true = make_force_corrected_diffusion_cell()
+    theta_xy_only = theta_true[_basis_xx.n_basis:]
+    # With center topology, only 1 partner (midpoint) is used
+    D_center = local_diffusion_estimates(
+        [cell],
+        dt=cell.dt,
+        mode="f_corrected",
+        fit_result=SimpleNamespace(theta=theta_xy_only),
+        basis_xx=None,
+        basis_xy=basis_xy,
+        topology="center",
+    )
+    D_poles = local_diffusion_estimates(
+        [cell],
+        dt=cell.dt,
+        mode="f_corrected",
+        fit_result=SimpleNamespace(theta=theta_xy_only),
+        basis_xx=None,
+        basis_xy=basis_xy,
+        topology="poles",
+    )
+    # Center and poles should produce different estimates (different partner geometry)
+    assert not np.allclose(
+        np.nanmean(D_center[0]), np.nanmean(D_poles[0]), rtol=0.01
+    )
+
+
 # ---- Variable diffusion fitting ----
 
 
