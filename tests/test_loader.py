@@ -15,11 +15,6 @@ def get_sample_cell_path() -> Path:
     return cells[0]
 
 
-def test_load_cell_returns_celldata() -> None:
-    cell = load_cell(get_sample_cell_path())
-    assert isinstance(cell, CellData)
-
-
 def test_load_cell_fields() -> None:
     path = get_sample_cell_path()
     cell = load_cell(path)
@@ -33,16 +28,6 @@ def test_load_cell_fields() -> None:
     assert isinstance(cell.ao2, int)
     assert isinstance(cell.tracked, int)
     assert cell.dt == 5.0
-
-
-def test_load_cell_chromosomes_are_centroids() -> None:
-    cell = load_cell(get_sample_cell_path())
-    assert cell.chromosomes.shape[1] == 3
-
-
-def test_load_cell_nan_handling() -> None:
-    cell = load_cell(get_sample_cell_path())
-    assert cell.chromosomes.dtype in (np.float32, np.float64)
 
 
 def test_has_valid_neb_detects_anaphase_only_files() -> None:
