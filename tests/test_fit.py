@@ -1,12 +1,14 @@
 import numpy as np
 
 from chromlearn.io.trajectory import TrimmedCell
+from chromlearn.model_fitting import FitConfig
 from chromlearn.model_fitting.basis import HatBasis
 from chromlearn.model_fitting.fit import (
     bootstrap_kernels,
     cross_validate,
     estimate_diffusion,
     fit_kernels,
+    fit_model,
 )
 from chromlearn.model_fitting.features import build_design_matrix
 from chromlearn.model_fitting.simulate import add_localization_noise, simulate_trajectories
@@ -144,30 +146,84 @@ def test_cross_validate_and_bootstrap_support_shifted_basis_eval_mode() -> None:
     ]
     _, basis_xx, basis_xy, theta_true = make_synthetic_inference_cell(T=90, N=12, dt=0.15)
 
-    cv_result = cross_validate(
-        cells,
-        basis_xx,
-        basis_xy,
-        lambda_ridge=1e-6,
-        lambda_rough=0.0,
+    config = FitConfig(
+        topology="poles_and_chroms",
+        n_basis_xx=4, n_basis_xy=4,
+        r_min_xx=0.0, r_max_xx=8.0,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat",
+        lambda_ridge=1e-6, lambda_rough=0.0,
         basis_eval_mode="ito_shift",
+        dt=0.15,
     )
-    G, V = build_design_matrix(cells, basis_xx, basis_xy, basis_eval_mode="ito_shift")
+    cv_result = cross_validate(cells, config)
+    G, V = build_design_matrix(
+        cells, basis_xx, basis_xy,
+        basis_eval_mode="ito_shift",
+        topology="poles_and_chroms",
+    )
     baseline_error = float(np.mean(V**2))
     assert np.all(np.isfinite(cv_result.held_out_errors))
     assert cv_result.mean_error < baseline_error
 
     bootstrap_result = bootstrap_kernels(
-        cells,
-        basis_xx,
-        basis_xy,
-        n_boot=8,
-        lambda_ridge=1e-6,
-        lambda_rough=0.0,
-        rng=np.random.default_rng(0),
-        basis_eval_mode="ito_shift",
+        cells, config, n_boot=8, rng=np.random.default_rng(0),
     )
     assert bootstrap_result.theta_samples.shape == (8, theta_true.size)
     assert np.all(np.isfinite(bootstrap_result.theta_std))
     bootstrap_rmse = float(np.sqrt(np.mean((bootstrap_result.theta_mean - theta_true) ** 2)))
     assert bootstrap_rmse < 0.08
+
+
+def test_fit_model_poles_only_no_xx() -> None:
+    """fit_model with topology='poles' produces no chromosome-chromosome kernel."""
+    cell, _, _, _ = make_synthetic_inference_cell()
+    config = FitConfig(
+        topology="poles",
+        n_basis_xx=10, n_basis_xy=4,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat",
+        lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.1,
+    )
+    model = fit_model([cell], config)
+    assert model.n_basis_xx == 0
+    assert model.basis_xx is None
+    assert model.theta.shape[0] == 4
+
+
+def test_fit_model_poles_and_chroms() -> None:
+    """fit_model with topology='poles_and_chroms' includes both kernels."""
+    cell, _, _, _ = make_synthetic_inference_cell()
+    config = FitConfig(
+        topology="poles_and_chroms",
+        n_basis_xx=4, n_basis_xy=4,
+        r_min_xx=0.0, r_max_xx=8.0,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat",
+        lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.1,
+    )
+    model = fit_model([cell], config)
+    assert model.n_basis_xx == 4
+    assert model.basis_xx is not None
+    assert model.theta.shape[0] == 8
+
+
+def test_cross_validate_poles_only() -> None:
+    """CV works with topology='poles' (basis_xx=None)."""
+    cells = [
+        make_synthetic_inference_cell(T=90, N=12, dt=0.15, seed=s)[0]
+        for s in range(4)
+    ]
+    config = FitConfig(
+        topology="poles",
+        n_basis_xy=4,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat",
+        lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.15,
+    )
+    cv = cross_validate(cells, config)
+    assert np.all(np.isfinite(cv.held_out_errors))
+    assert cv.mean_error > 0

@@ -30,8 +30,14 @@ class CVResult:
     std_error: float
 
 
-def _block_roughness(R_xx: np.ndarray, R_xy: np.ndarray) -> np.ndarray:
+def _block_roughness(R_xx: np.ndarray | None, R_xy: np.ndarray) -> np.ndarray:
+    if R_xx is None:
+        return R_xy
     return block_diag(R_xx, R_xy)
+
+
+def _topology_has_chroms(topology: str) -> bool:
+    return topology in ("poles_and_chroms", "center_and_chroms")
 
 
 def fit_kernels(
@@ -118,13 +124,9 @@ def estimate_diffusion(
 
 def bootstrap_kernels(
     cells: list[TrimmedCell],
-    basis_xx,
-    basis_xy,
+    config: FitConfig,
     n_boot: int = 250,
-    lambda_ridge: float = 1e-3,
-    lambda_rough: float = 1e-3,
     rng: np.random.Generator | None = None,
-    basis_eval_mode: str = "ito",
 ) -> BootstrapResult:
     """Bootstrap kernel fits by resampling cells with replacement.
 
@@ -133,6 +135,7 @@ def bootstrap_kernels(
     :class:`BootstrapResult` contains the full distribution of ``theta``
     samples for confidence-interval construction.
     """
+    from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
     from chromlearn.model_fitting.features import build_design_matrix
 
     if rng is None:
@@ -140,21 +143,30 @@ def bootstrap_kernels(
     if not cells:
         raise ValueError("bootstrap_kernels requires at least one cell.")
 
-    roughness = _block_roughness(
-        basis_xx.roughness_matrix(),
-        basis_xy.roughness_matrix(),
-    )
-    theta_samples = np.zeros((n_boot, basis_xx.n_basis + basis_xy.n_basis))
+    BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
+    if _topology_has_chroms(config.topology):
+        basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+    else:
+        basis_xx = None
+    basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
+
+    R_xx = basis_xx.roughness_matrix() if basis_xx is not None else None
+    roughness = _block_roughness(R_xx, basis_xy.roughness_matrix())
+    n_bxx = basis_xx.n_basis if basis_xx is not None else 0
+    theta_samples = np.zeros((n_boot, n_bxx + basis_xy.n_basis))
 
     for boot_index in range(n_boot):
         sampled_indices = rng.choice(len(cells), size=len(cells), replace=True)
-        sampled_cells = [cells[index] for index in sampled_indices]
-        G, V = build_design_matrix(sampled_cells, basis_xx, basis_xy, basis_eval_mode=basis_eval_mode)
+        sampled_cells = [cells[i] for i in sampled_indices]
+        G, V = build_design_matrix(
+            sampled_cells, basis_xx, basis_xy,
+            basis_eval_mode=config.basis_eval_mode,
+            topology=config.topology,
+        )
         theta_samples[boot_index] = fit_kernels(
-            G,
-            V,
-            lambda_ridge=lambda_ridge,
-            lambda_rough=lambda_rough,
+            G, V,
+            lambda_ridge=config.lambda_ridge,
+            lambda_rough=config.lambda_rough,
             R=roughness,
         ).theta
 
@@ -167,11 +179,7 @@ def bootstrap_kernels(
 
 def cross_validate(
     cells: list[TrimmedCell],
-    basis_xx,
-    basis_xy,
-    lambda_ridge: float = 1e-3,
-    lambda_rough: float = 1e-3,
-    basis_eval_mode: str = "ito",
+    config: FitConfig,
 ) -> CVResult:
     """Leave-one-cell-out cross-validation.
 
@@ -182,15 +190,21 @@ def cross_validate(
     Returns:
         CVResult with per-fold errors and summary statistics.
     """
+    from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
     from chromlearn.model_fitting.features import build_design_matrix
 
     if not cells:
         raise ValueError("cross_validate requires at least one cell.")
 
-    roughness = _block_roughness(
-        basis_xx.roughness_matrix(),
-        basis_xy.roughness_matrix(),
-    )
+    BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
+    if _topology_has_chroms(config.topology):
+        basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+    else:
+        basis_xx = None
+    basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
+
+    R_xx = basis_xx.roughness_matrix() if basis_xx is not None else None
+    roughness = _block_roughness(R_xx, basis_xy.roughness_matrix())
     errors = np.full(len(cells), np.nan, dtype=np.float64)
 
     for held_out_index in range(len(cells)):
@@ -199,18 +213,26 @@ def cross_validate(
         ]
         test_cells = [cells[held_out_index]]
 
-        G_train, V_train = build_design_matrix(train_cells, basis_xx, basis_xy, basis_eval_mode=basis_eval_mode)
+        G_train, V_train = build_design_matrix(
+            train_cells, basis_xx, basis_xy,
+            basis_eval_mode=config.basis_eval_mode,
+            topology=config.topology,
+        )
         if G_train.size == 0:
             continue
 
         fit_result = fit_kernels(
             G_train,
             V_train,
-            lambda_ridge=lambda_ridge,
-            lambda_rough=lambda_rough,
+            lambda_ridge=config.lambda_ridge,
+            lambda_rough=config.lambda_rough,
             R=roughness,
         )
-        G_test, V_test = build_design_matrix(test_cells, basis_xx, basis_xy, basis_eval_mode=basis_eval_mode)
+        G_test, V_test = build_design_matrix(
+            test_cells, basis_xx, basis_xy,
+            basis_eval_mode=config.basis_eval_mode,
+            topology=config.topology,
+        )
         if G_test.size == 0:
             continue
         predictions = G_test @ fit_result.theta
@@ -248,15 +270,19 @@ def fit_model(
         config = FitConfig()
 
     BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
-    basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+    if _topology_has_chroms(config.topology):
+        basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+    else:
+        basis_xx = None
     basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
 
     G, V = build_design_matrix(
-        cells, basis_xx, basis_xy, basis_eval_mode=config.basis_eval_mode,
+        cells, basis_xx, basis_xy,
+        basis_eval_mode=config.basis_eval_mode,
+        topology=config.topology,
     )
-    roughness = _block_roughness(
-        basis_xx.roughness_matrix(), basis_xy.roughness_matrix(),
-    )
+    R_xx = basis_xx.roughness_matrix() if basis_xx is not None else None
+    roughness = _block_roughness(R_xx, basis_xy.roughness_matrix())
     result = fit_kernels(
         G, V,
         lambda_ridge=config.lambda_ridge,
@@ -267,7 +293,7 @@ def fit_model(
 
     return FittedModel(
         theta=result.theta,
-        n_basis_xx=basis_xx.n_basis,
+        n_basis_xx=basis_xx.n_basis if basis_xx is not None else 0,
         n_basis_xy=basis_xy.n_basis,
         basis_xx=basis_xx,
         basis_xy=basis_xy,
