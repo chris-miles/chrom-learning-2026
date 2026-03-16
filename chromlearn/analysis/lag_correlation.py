@@ -7,6 +7,7 @@ import numpy as np
 from scipy.signal import savgol_filter
 
 from chromlearn.io.loader import CellData
+from chromlearn.io.trajectory import TrimmedCell
 
 
 @dataclass
@@ -27,7 +28,7 @@ def _adjust_window(length: int, desired: int) -> int | None:
 
 
 def compute_lag_correlation_single(
-    cell: CellData,
+    cell: CellData | TrimmedCell,
     lag_max: int = 101,
     smooth_window: int = 31,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -79,7 +80,7 @@ def compute_lag_correlation_single(
 
 
 def compute_lag_correlation(
-    cells: list[CellData],
+    cells: list[CellData] | list[TrimmedCell],
     lag_max: int = 101,
     smooth_window: int = 31,
 ) -> LagResult:

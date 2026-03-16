@@ -8,6 +8,8 @@ Python codebase for learning pairwise interaction kernels from chromosome/centro
 
 - `docs/design.md` — Full design spec: architecture, model, all design decisions and future extensions
 - `docs/llm_fitting_plan.md` — Mathematical background (model equations, basis expansion, regression, validation)
+- `docs/specs/` — Detailed feature specs (multi-point estimators, variable diffusion, etc.)
+- `docs/implementation_plan.md` — Step-by-step build plan for agentic workers
 
 ## Architecture
 
@@ -22,10 +24,10 @@ Notebooks in `notebooks/` are the primary interface. Raw data lives in `data/` (
 
 - dt = 5 seconds, spatial units = microns
 - Chromosome position = centroid of sister kinetochores (single 3D particle)
-- Centrosomes are external/given (not modeled)
+- Centrosomes are external/given (not modeled); justified in notebook 02
 - Trajectories start at NEB, endpoint is configurable (default: midpoint NEB-AO)
 - Files with `neb = NaN` are anaphase-only and should be ignored
-- Primary condition for fitting: `rpe18_ctr` NEB-annotated subset (7 cells)
+- Primary condition for fitting: `rpe18_ctr` (13 cells with NEB annotations after loading)
 
 ## Code style
 

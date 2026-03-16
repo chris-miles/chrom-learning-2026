@@ -55,10 +55,16 @@ class BSplineBasis:
             ``[r_min, r_max]`` are zero.
         """
         values = np.asarray(r, dtype=np.float64).reshape(-1)
-        result = np.zeros((values.size, self.n_basis), dtype=np.float64)
-        for index, spline in enumerate(self._splines):
-            basis_values = spline(values)
-            result[:, index] = np.nan_to_num(basis_values, nan=0.0)
+        n = values.size
+        result = np.zeros((n, self.n_basis), dtype=np.float64)
+        if n == 0:
+            return result
+        inside = (values >= self.r_min) & (values <= self.r_max)
+        if not inside.any():
+            return result
+        v_in = values[inside]
+        sparse_result = BSpline.design_matrix(v_in, self.knots, self.degree)
+        result[inside] = np.nan_to_num(sparse_result.toarray(), nan=0.0)
         return result
 
     def roughness_matrix(self, n_quad: int = 800) -> np.ndarray:
@@ -106,9 +112,7 @@ class HatBasis:
         if self.n_basis == 1:
             inside = ((values >= self.r_min) & (values <= self.r_max)).astype(float)
             return inside[:, np.newaxis]
-        result = np.zeros((values.size, self.n_basis), dtype=np.float64)
-        for index, center in enumerate(self.centers):
-            result[:, index] = np.maximum(0.0, 1.0 - np.abs(values - center) / self.width)
+        result = np.maximum(0.0, 1.0 - np.abs(values[:, np.newaxis] - self.centers[np.newaxis, :]) / self.width)
         outside = (values < self.r_min) | (values > self.r_max)
         result[outside] = 0.0
         return result

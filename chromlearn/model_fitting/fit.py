@@ -6,6 +6,7 @@ import numpy as np
 from scipy.linalg import block_diag
 
 from chromlearn.io.trajectory import TrimmedCell
+from chromlearn.model_fitting import FitConfig
 
 
 @dataclass
@@ -219,4 +220,58 @@ def cross_validate(
         held_out_errors=errors,
         mean_error=float(np.nanmean(errors)),
         std_error=float(np.nanstd(errors)),
+    )
+
+
+def fit_model(
+    cells: list[TrimmedCell],
+    config: FitConfig | None = None,
+) -> "FittedModel":
+    """Fit pairwise interaction kernels from trimmed trajectories.
+
+    Constructs bases from *config*, builds the design matrix, solves the
+    penalized regression, and estimates the scalar diffusion coefficient.
+
+    Args:
+        cells: Trimmed cell trajectories.
+        config: Fitting configuration.  Uses ``FitConfig()`` defaults when
+            *None*.
+
+    Returns:
+        A :class:`FittedModel` ready for evaluation and plotting.
+    """
+    from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
+    from chromlearn.model_fitting.features import build_design_matrix
+    from chromlearn.model_fitting.model import FittedModel
+
+    if config is None:
+        config = FitConfig()
+
+    BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
+    basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+    basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
+
+    G, V = build_design_matrix(
+        cells, basis_xx, basis_xy, basis_eval_mode=config.basis_eval_mode,
+    )
+    roughness = _block_roughness(
+        basis_xx.roughness_matrix(), basis_xy.roughness_matrix(),
+    )
+    result = fit_kernels(
+        G, V,
+        lambda_ridge=config.lambda_ridge,
+        lambda_rough=config.lambda_rough,
+        R=roughness,
+    )
+    D_x = estimate_diffusion(V, G, result.theta, dt=config.dt)
+
+    return FittedModel(
+        theta=result.theta,
+        n_basis_xx=basis_xx.n_basis,
+        n_basis_xy=basis_xy.n_basis,
+        basis_xx=basis_xx,
+        basis_xy=basis_xy,
+        D_x=D_x,
+        dt=config.dt,
+        metadata={"n_cells": len(cells)},
     )

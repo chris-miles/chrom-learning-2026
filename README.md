@@ -12,7 +12,9 @@ Infers effective distance-dependent forces between chromosomes (and from centros
   - `io/` — Data loading, trajectory processing, cell catalog
   - `model_fitting/` — Basis functions, design matrix, regression, simulation, validation, diffusion estimation
   - `analysis/` — Supporting analyses (lag correlation, trajectory visualization)
-- `notebooks/` — Jupyter notebooks (primary interface)
+- `notebooks/` — Jupyter-compatible `.py` notebooks (primary interface)
+  - `01_explore_data.py` — Data loading, visualization, trajectory inspection
+  - `02_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
 - `data/` — Raw `.mat` trajectory files
 - `old_code/` — Reference MATLAB implementation
 - `docs/` — Design spec and planning documents
@@ -35,7 +37,7 @@ Files with `neb = NaN` are treated as anaphase-only and are excluded from the
 prometaphase fitting pipeline.
 
 Primary fitting dataset: `rpe18_ctr` NEB-annotated subset
-(`7` of `28` RPE1 control files, 5 s frame interval, micron units).
+(13 RPE1 control cells with NEB annotations, 5 s frame interval, micron units).
 
 ## Key options
 
@@ -51,3 +53,5 @@ All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init
 
 - `docs/design.md` — Full design specification (architecture, model, decisions, future extensions)
 - `docs/llm_fitting_plan.md` — Mathematical background and roadmap
+- `docs/specs/` — Detailed feature specs (multi-point estimators, variable diffusion, etc.)
+- `docs/implementation_plan.md` — Step-by-step build plan

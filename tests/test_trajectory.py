@@ -12,7 +12,7 @@ from chromlearn.io.trajectory import (
 )
 
 
-def make_fake_cell(T: int = 100, N: int = 10, neb: int = 10, ao1: int = 80, ao2: int = 82) -> CellData:
+def make_fake_cell(T: int = 250, N: int = 10, neb: int = 10, ao1: int = 220, ao2: int = 225) -> CellData:
     rng = np.random.default_rng(42)
     centrioles = np.zeros((T, 3, 2))
     for time_index in range(T):
@@ -35,7 +35,7 @@ def make_fake_cell(T: int = 100, N: int = 10, neb: int = 10, ao1: int = 80, ao2:
 def test_pole_pole_distance() -> None:
     cell = make_fake_cell()
     distances = pole_pole_distance(cell)
-    assert distances.shape == (100,)
+    assert distances.shape == (cell.centrioles.shape[0],)
     np.testing.assert_allclose(distances[0], 2.0)
     assert np.all(np.diff(distances) > 0)
 
@@ -43,23 +43,27 @@ def test_pole_pole_distance() -> None:
 def test_pole_center() -> None:
     cell = make_fake_cell()
     center = pole_center(cell)
-    assert center.shape == (100, 3)
+    assert center.shape == (cell.centrioles.shape[0], 3)
     np.testing.assert_allclose(center, 0.0)
 
 
 def test_trim_trajectory_midpoint() -> None:
-    cell = make_fake_cell(T=100, neb=10, ao1=80, ao2=82)
+    cell = make_fake_cell()
     trimmed = trim_trajectory(cell, method="midpoint_neb_ao")
     assert isinstance(trimmed, TrimmedCell)
-    expected_len = 44 - 9 + 1
+    # neb=10 (1-based) -> start=9; ao_mean=222 (1-based) -> 221 (0-based)
+    # midpoint = (9 + 221) // 2 = 115; window = 115 - 9 + 1 = 107
+    expected_len = 107
     assert trimmed.chromosomes.shape[0] == expected_len
     assert trimmed.centrioles.shape[0] == expected_len
 
 
 def test_trim_trajectory_ao_mean() -> None:
-    cell = make_fake_cell(T=100, neb=10, ao1=80, ao2=82)
+    cell = make_fake_cell()
     trimmed = trim_trajectory(cell, method="ao_mean")
-    expected_len = 80 - 9 + 1
+    # ao_mean = round((220+225)/2) = 222 (1-based) -> 221 (0-based)
+    # window = 221 - 9 + 1 = 213
+    expected_len = 213
     assert trimmed.chromosomes.shape[0] == expected_len
 
 

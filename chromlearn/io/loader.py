@@ -141,10 +141,13 @@ def load_cell(path: Path | str, dt: float = 5.0) -> CellData:
     path = Path(path)
     raw = _load_mat(path)
 
-    required = {"centrioles", "kinetochores", "neb", "ao1", "ao2", "tracked"}
+    required = {"centrioles", "kinetochores", "neb", "tracked"}
     missing = sorted(required.difference(raw))
     if missing:
         raise KeyError(f"Missing required variables in {path.name}: {missing}")
+    # Support files that store a single 'ao' instead of separate 'ao1'/'ao2'.
+    # If the value is NaN, fall back to the last frame.
+    has_ao_pair = "ao1" in raw and "ao2" in raw
     if not has_valid_neb(path):
         raise ValueError(
             f"{path.name} has neb=NaN and is treated as an anaphase-only file; "
@@ -169,8 +172,14 @@ def load_cell(path: Path | str, dt: float = 5.0) -> CellData:
         centrioles=centrioles,
         chromosomes=chromosomes,
         neb=_extract_scalar_int(raw["neb"]),
-        ao1=_extract_scalar_int(raw["ao1"]),
-        ao2=_extract_scalar_int(raw["ao2"]),
+        ao1=_extract_scalar_int_with_default(
+            raw["ao1"] if has_ao_pair else raw.get("ao", np.nan),
+            default=centrioles.shape[0],  # last frame, 1-based
+        ),
+        ao2=_extract_scalar_int_with_default(
+            raw["ao2"] if has_ao_pair else raw.get("ao", np.nan),
+            default=centrioles.shape[0],
+        ),
         tracked=tracked,
         dt=dt,
     )

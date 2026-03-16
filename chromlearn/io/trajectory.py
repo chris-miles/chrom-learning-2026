@@ -57,47 +57,58 @@ def _savgol_window(length: int, desired: int) -> int | None:
     return window
 
 
-def compute_end_sep(cell: CellData, smooth_window: int = 51) -> int:
-    """Detect the first frame where spindle separation has largely plateaued."""
+def compute_end_sep(
+    cell: CellData,
+    smooth_window: int = 51,
+    plateau_frac: float = 0.95,
+    avg_halfwin: int = 2,
+) -> int:
+    """Detect the first frame where spindle separation reaches its metaphase plateau.
+
+    1. Smooth the pole-pole distance with a Savitzky-Golay filter.
+    2. Compute the reference maximum over ``[NEB, midpoint(NEB, AO)]`` — the
+       core metaphase region — to avoid inflation from late pre-anaphase ramp.
+    3. Compute a running average (window = ``2 * avg_halfwin + 1``, default 5
+       frames) of the smoothed distance.
+    4. Return the first frame where that running average reaches *plateau_frac*
+       (default 95%) of the reference maximum.
+    """
+    neb_frame = cell.neb - 1
+    ao_frame = _ao_min_index(cell)
+    midpoint_frame = (neb_frame + ao_frame) // 2
 
     distances = pole_pole_distance(cell)
     if distances.size <= 2:
         return max(0, distances.size - 1)
 
-    end_smooth_window = min(200, distances.size)
-    distance_window = _savgol_window(end_smooth_window, smooth_window)
-    if distance_window is None:
+    window = _savgol_window(distances.size, smooth_window)
+    if window is None:
         return distances.size - 1
 
     smoothed = savgol_filter(
-        distances[:end_smooth_window],
-        window_length=distance_window,
-        polyorder=min(3, distance_window - 1),
+        distances,
+        window_length=window,
+        polyorder=min(3, window - 1),
     )
-    span = float(smoothed.max() - smoothed.min())
-    if span <= 1e-12:
-        return distances.size - 1
+    # Reference max from the core metaphase region.
+    ref_start = max(0, neb_frame)
+    ref_end = min(midpoint_frame + 1, len(smoothed))
+    metaphase_max = float(smoothed[ref_start:ref_end].max()) if ref_end > ref_start else float(smoothed.max())
+    threshold = plateau_frac * metaphase_max
 
-    normalized = (smoothed - smoothed.min()) / span
-    velocity = np.diff(normalized)
-    velocity_window = _savgol_window(velocity.size, smooth_window)
-    if velocity_window is None:
-        return distances.size - 1
+    # Running average of the smoothed signal.
+    kernel_size = 2 * avg_halfwin + 1
+    kernel = np.ones(kernel_size) / kernel_size
+    running_avg = np.convolve(smoothed, kernel, mode="same")
 
-    smooth_velocity = savgol_filter(
-        velocity,
-        window_length=velocity_window,
-        polyorder=min(3, velocity_window - 1),
-    )
-    denom = float(np.max(np.abs(smooth_velocity)))
-    if denom <= 1e-12:
-        return distances.size - 1
-
-    normalized_velocity = smooth_velocity / denom
-    candidates = np.flatnonzero((normalized_velocity < 0.1) & (np.arange(velocity.size) > 50))
+    candidates = np.flatnonzero(running_avg >= threshold)
     if candidates.size == 0:
-        return distances.size - 1
+        return max(0, len(smoothed) - 1)
     return int(candidates[0])
+
+
+def _ao_min_index(cell: CellData) -> int:
+    return min(cell.ao1, cell.ao2) - 1
 
 
 def _ao_mean_index(cell: CellData) -> int:
@@ -118,21 +129,33 @@ def _compute_endpoint(cell: CellData, method: str) -> int:
     )
 
 
-def trim_trajectory(cell: CellData, method: str = "midpoint_neb_ao") -> TrimmedCell:
+def trim_trajectory(
+    cell: CellData, method: str = "midpoint_neb_ao", min_frames: int = 100
+) -> TrimmedCell:
     """Trim cell trajectories to the window ``[NEB, endpoint]``.
 
     Args:
         cell: Raw cell data (``neb``, ``ao1``, ``ao2`` are 1-based MATLAB indices).
         method: Endpoint strategy -- ``"midpoint_neb_ao"`` (default),
             ``"ao_mean"``, or ``"end_sep"``.
+        min_frames: Minimum number of frames required after trimming.
 
     Returns:
         TrimmedCell with arrays sliced to the chosen time window.
+
+    Raises:
+        ValueError: If the trimmed trajectory has fewer than *min_frames* frames.
     """
     start = max(0, cell.neb - 1)
     end = min(cell.centrioles.shape[0] - 1, _compute_endpoint(cell, method))
     if end < start:
         end = start
+    n_frames = end - start + 1
+    if n_frames < min_frames:
+        raise ValueError(
+            f"{cell.cell_id}: trimmed trajectory has {n_frames} frames, "
+            f"fewer than the minimum {min_frames}."
+        )
     window = slice(start, end + 1)
     return TrimmedCell(
         cell_id=cell.cell_id,
