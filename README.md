@@ -15,8 +15,9 @@ Infers effective distance-dependent forces between chromosomes (and from centros
 - `notebooks/` — Jupyter-compatible `.py` notebooks (primary interface)
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
   - `02_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
-- `data/` — Raw `.mat` trajectory files
-- `old_code/` — Reference MATLAB implementation
+  - `03_model_selection.py` — Compares 4 interaction topologies (poles, center, ±chromosomes) via cross-validation, kernel plots, physical plausibility, and forward simulation
+  - `04_robustness.py` — Hyperparameter sensitivity: basis size, regularization, estimator mode, endpoint method, diffusion estimation
+- `data/` — Raw `.mat` trajectory files (not tracked in git)
 - `docs/` — Design spec and planning documents
 
 ## Setup
@@ -43,6 +44,7 @@ Primary fitting dataset: `rpe18_ctr` NEB-annotated subset
 
 All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init__.py`):
 
+- **Topology** (`topology`): `"poles"` (default), `"center"` (midpoint), `"poles_and_chroms"`, `"center_and_chroms"` — selects which pairwise interactions to include
 - **Basis evaluation mode** (`basis_eval_mode`): `"ito"` (default), `"ito_shift"` (decorrelates localization noise), `"strato"` (midpoint, reduces finite-dt bias)
 - **Diffusion estimator** (`diffusion_mode`): `"msd"` (default), `"vestergaard"` (noise-robust), `"weak_noise"` (drift-robust), `"f_corrected"` (subtracts inferred force)
 - **Variable D** (`D_variable`): fit D as a function of position along the spindle axis, radial distance, or distance from spindle center

@@ -54,8 +54,13 @@ VALID_TOPOLOGIES = ("poles", "center", "poles_and_chroms", "center_and_chroms")
 def get_partners(cell: CellData | TrimmedCell, topology: str) -> np.ndarray:
     """Construct interaction partner trajectories for a given topology.
 
-    Returns:
-        Array of shape ``(n_partners, T, 3)``.
+    For ``"poles"`` / ``"poles_and_chroms"``: returns both centrosomes as
+    separate partners — shape ``(2, T, 3)``.
+    For ``"center"`` / ``"center_and_chroms"``: returns the centrosome
+    midpoint as a single partner — shape ``(1, T, 3)``.
+
+    The ``_and_chroms`` suffix does not affect the partner array; it signals
+    downstream code to include chromosome-chromosome interactions.
     """
     if topology not in VALID_TOPOLOGIES:
         raise ValueError(

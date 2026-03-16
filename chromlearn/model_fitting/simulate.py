@@ -8,8 +8,10 @@ import numpy as np
 
 @dataclass
 class SyntheticDataset:
-    chromosomes: np.ndarray
-    centrosomes: np.ndarray
+    """Synthetic benchmark with known ground-truth kernels and trajectories."""
+
+    chromosomes: np.ndarray  # (T, 3, N)
+    centrosomes: np.ndarray  # (T, 3, 2) for backward compat
     kernel_xx: Callable[[np.ndarray], np.ndarray] | None
     kernel_xy: Callable[[np.ndarray], np.ndarray]
     D_x: float

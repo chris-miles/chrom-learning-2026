@@ -203,13 +203,11 @@ chrom_learning_2026/               # repository root
 │       ├── __init__.py
 │       ├── lag_correlation.py     # Velocity autocorrelation (centrosome vs chromosome)
 │       └── trajectory_viz.py      # Single-cell trajectory visualization, spindle-frame plots
-├── notebooks/                     # Primary interface (Jupyter)
-│   ├── 01_explore_data.ipynb
-│   ├── 02_lag_correlation.ipynb
-│   ├── 03_synthetic_validation.ipynb
-│   ├── 04_fit_kernels.ipynb
-│   ├── 05_model_selection.ipynb
-│   └── 06_forward_simulation.ipynb
+├── notebooks/                     # Primary interface (percent-cell .py format)
+│   ├── 01_explore_data.py         # Data loading, metadata, trajectory visualization
+│   ├── 02_chromosomes_follow_centrosomes.py  # Centrosome autonomy justification
+│   ├── 03_model_selection.py      # 4-topology comparison, CV, forward simulation
+│   └── 04_robustness.py           # Hyperparameter sensitivity sweeps
 ├── data/                          # .mat files (existing raw data, not a Python package)
 ├── old_code/                      # MATLAB reference (existing)
 └── docs/                          # Documentation (existing)
@@ -249,7 +247,15 @@ class FitConfig:
     r_min_D: float = -8.0
     r_max_D: float = 8.0
     D_coordinate: str = "axial"      # "axial", "radial", or "distance"
+    # Interaction topology
+    topology: str = "poles"          # "poles", "center", "poles_and_chroms", "center_and_chroms"
 ```
+
+The `topology` field controls which interaction partners are used:
+- `"poles"`: Each centrosome independently (2 partners, no chromosome-chromosome)
+- `"center"`: Centrosome midpoint only (1 partner, no chromosome-chromosome)
+- `"poles_and_chroms"`: Each centrosome + chromosome-chromosome interactions
+- `"center_and_chroms"`: Centrosome midpoint + chromosome-chromosome interactions
 
 ### Module responsibilities
 
@@ -264,6 +270,7 @@ class FitConfig:
 - `spindle_frame(cell) -> SpindleFrameData`: Compute axial/radial coordinates relative to pole-pole axis (for visualization)
 - `pole_pole_distance(cell) -> array`: Distance between centrosomes over time
 - `pole_center(cell) -> array`: Midpoint of two centrosomes over time
+- `get_partners(cell, topology) -> array`: Construct interaction partner array (n_partners, T, 3) based on topology
 
 **io/catalog.py**
 - `list_cells(condition) -> list[str]`: List available cell IDs for a condition
@@ -277,24 +284,25 @@ class FitConfig:
 - `Basis.roughness_matrix() -> array`: Integrated squared second derivative penalty
 
 **model_fitting/features.py**
-- `build_design_matrix(cells, basis_xx, basis_xy, basis_eval_mode="ito") -> (G, V)`: Construct stacked design matrix and response vector from list of trimmed cells
+- `build_design_matrix(cells, basis_xx, basis_xy, basis_eval_mode="ito", topology="poles") -> (G, V)`: Construct stacked design matrix and response vector from list of trimmed cells. Uses `get_partners(cell, topology)` to obtain interaction partner trajectories. When `basis_xx=None`, the chromosome-chromosome block is skipped.
 - `basis_eval_mode`: controls where basis functions are evaluated ("ito", "ito_shift", "strato")
-- Internally computes all pairwise distances, unit vectors, and basis feature vectors in 3D
+- Internally computes all pairwise distances, unit vectors, and basis feature vectors in 3D via vectorized einsum contractions
 
 **model_fitting/fit.py**
 - `fit_kernels(G, V, lambda_ridge, lambda_rough, R) -> FitResult`: Penalized least squares
-- `cross_validate(cells, basis_sizes, lambdas, ...) -> CVResult`: Leave-one-cell-out CV. For each fold, rebuild G and V excluding all rows from the held-out cell, fit theta on the remaining data, then evaluate one-step prediction error on the held-out cell's displacement vectors using the fitted theta. Report mean and std of held-out error across folds.
-- `bootstrap_kernels(cells, n_boot, ...) -> BootstrapResult`: Bootstrap over trajectories
+- `fit_model(cells, config: FitConfig) -> FittedModel`: High-level wrapper that builds bases, design matrix, fits, and estimates D
+- `cross_validate(cells, config: FitConfig) -> CVResult`: Leave-one-cell-out CV. Constructs bases from config, respects topology.
+- `bootstrap_kernels(cells, config: FitConfig, n_boot, rng) -> BootstrapResult`: Bootstrap over cells
 - `estimate_diffusion(V, G, theta, dt, d=3) -> float`: Residual-based D_x
 
 **model_fitting/model.py**
-- `FittedModel`: Stores theta, basis configs, D_x, metadata
-- `FittedModel.evaluate_kernel(kernel_name, r_values) -> array`: Evaluate f_xx or f_xy
-- `FittedModel.save(path)` / `FittedModel.load(path)`: Persistence
+- `FittedModel`: Stores theta, basis configs, D_x, topology, metadata. `basis_xx` can be `None` for topologies without chromosome-chromosome interactions.
+- `FittedModel.evaluate_kernel("xx" or "xy", r_values) -> array | None`: Returns `None` for xx when `basis_xx is None`
+- `FittedModel.save(path)` / `FittedModel.load(path)`: Persistence. Handles `basis_xx=None` and backward-compatible loading (missing topology defaults to "poles").
 
 **model_fitting/simulate.py**
-- `simulate_trajectories(kernel_xx, kernel_xy, centrosome_positions, n_chromosomes, n_steps, dt, D_x) -> array`: Euler-Maruyama forward simulation
-- `generate_synthetic_data(true_kernels, ...) -> SyntheticDataset`: Create benchmark with known ground truth
+- `simulate_trajectories(kernel_xx, kernel_xy, partner_positions, x0, n_steps, dt, D_x, rng) -> array`: Euler-Maruyama forward simulation. `partner_positions` shape `(n_partners, T, 3)`. `kernel_xx=None` skips chromosome-chromosome forces.
+- `generate_synthetic_data(kernel_xx, kernel_xy, ...) -> SyntheticDataset`: Create benchmark with known ground truth
 - `add_localization_noise(trajectories, sigma) -> array`: Add Gaussian noise to positions
 
 **model_fitting/validate.py**

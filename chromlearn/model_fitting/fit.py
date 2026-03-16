@@ -11,6 +11,8 @@ from chromlearn.model_fitting import FitConfig
 
 @dataclass
 class FitResult:
+    """Result of a single penalised least-squares kernel fit."""
+
     theta: np.ndarray
     residuals: np.ndarray
     D_x: float
@@ -18,6 +20,8 @@ class FitResult:
 
 @dataclass
 class BootstrapResult:
+    """Bootstrap distribution of kernel coefficients (cell-level resampling)."""
+
     theta_samples: np.ndarray
     theta_mean: np.ndarray
     theta_std: np.ndarray
@@ -25,6 +29,8 @@ class BootstrapResult:
 
 @dataclass
 class CVResult:
+    """Leave-one-cell-out cross-validation result (MSE on held-out cells)."""
+
     held_out_errors: np.ndarray
     mean_error: float
     std_error: float

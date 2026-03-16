@@ -25,13 +25,19 @@ class FittedModel:
 
     @property
     def theta_xx(self) -> np.ndarray:
+        """Chromosome-chromosome kernel coefficients (empty if no xx basis)."""
         return self.theta[: self.n_basis_xx]
 
     @property
     def theta_xy(self) -> np.ndarray:
+        """Chromosome-partner kernel coefficients."""
         return self.theta[self.n_basis_xx :]
 
     def evaluate_kernel(self, kernel: str, r: np.ndarray) -> np.ndarray | None:
+        """Evaluate a fitted kernel at distances *r*.
+
+        Returns ``None`` for ``"xx"`` when the model has no chromosome-chromosome basis.
+        """
         values = np.asarray(r, dtype=np.float64)
         if kernel == "xx":
             if self.basis_xx is None:
