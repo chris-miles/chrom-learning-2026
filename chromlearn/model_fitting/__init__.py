@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import ClassVar
 
 
 @dataclass
@@ -6,8 +7,11 @@ class FitConfig:
     """Configuration for the kernel fitting pipeline.
 
     Attributes:
-        endpoint_method: Trajectory trimming endpoint — ``"midpoint_neb_ao"``
-            (default), ``"ao_mean"``, or ``"end_sep"``.
+        endpoint_method: Trajectory trimming endpoint — ``"neb_ao_frac"``
+            (default) or ``"end_sep"``.
+        endpoint_frac: Fraction of the ``[NEB, AO]`` window to use (only for
+            ``"neb_ao_frac"``).  ``0.5`` = midpoint (default), ``1.0`` = full
+            window to AO.
         n_basis_xx: Number of basis functions for chromosome-chromosome kernel.
         n_basis_xy: Number of basis functions for centrosome-on-chromosome kernel.
         r_min_xx, r_max_xx: Domain of the xx basis (microns).
@@ -37,7 +41,13 @@ class FitConfig:
             "poles_and_chroms", or "center_and_chroms".
     """
 
-    endpoint_method: str = "midpoint_neb_ao"
+    _VALID_BASIS_TYPES: ClassVar = frozenset({"bspline", "hat"})
+    _VALID_TOPOLOGIES: ClassVar = frozenset({"poles", "center", "poles_and_chroms", "center_and_chroms"})
+    _VALID_DIFFUSION_MODES: ClassVar = frozenset({"msd", "vestergaard", "weak_noise", "f_corrected"})
+    _VALID_ENDPOINT_METHODS: ClassVar = frozenset({"neb_ao_frac", "end_sep"})
+
+    endpoint_method: str = "neb_ao_frac"
+    endpoint_frac: float = 0.5
     n_basis_xx: int = 10
     n_basis_xy: int = 10
     r_min_xx: float = 0.5
@@ -57,3 +67,25 @@ class FitConfig:
     r_max_D: float = 8.0
     D_coordinate: str = "axial"
     topology: str = "poles"
+
+    def __post_init__(self) -> None:
+        if self.basis_type not in self._VALID_BASIS_TYPES:
+            raise ValueError(
+                f"Unknown basis_type {self.basis_type!r}; "
+                f"must be one of {sorted(self._VALID_BASIS_TYPES)}"
+            )
+        if self.topology not in self._VALID_TOPOLOGIES:
+            raise ValueError(
+                f"Unknown topology {self.topology!r}; "
+                f"must be one of {sorted(self._VALID_TOPOLOGIES)}"
+            )
+        if self.diffusion_mode not in self._VALID_DIFFUSION_MODES:
+            raise ValueError(
+                f"Unknown diffusion_mode {self.diffusion_mode!r}; "
+                f"must be one of {sorted(self._VALID_DIFFUSION_MODES)}"
+            )
+        if self.endpoint_method not in self._VALID_ENDPOINT_METHODS:
+            raise ValueError(
+                f"Unknown endpoint_method {self.endpoint_method!r}; "
+                f"must be one of {sorted(self._VALID_ENDPOINT_METHODS)}"
+            )

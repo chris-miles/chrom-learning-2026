@@ -15,7 +15,7 @@ from chromlearn.model_fitting.fit import cross_validate
 from chromlearn.model_fitting.plotting import plot_cv_curve
 
 # %%
-cells = [trim_trajectory(cell, method="midpoint_neb_ao") for cell in load_condition("rpe18_ctr")]
+cells = [trim_trajectory(cell, method="neb_ao_frac") for cell in load_condition("rpe18_ctr")]
 configs = {}
 for n_basis in [4, 6, 8, 10]:
     basis_xx = BSplineBasis(0.5, 10.0, n_basis)

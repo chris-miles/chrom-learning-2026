@@ -60,7 +60,7 @@ axis.legend()
 plt.show()
 
 # %%
-trimmed = trim_trajectory(cell, method="midpoint_neb_ao")
+trimmed = trim_trajectory(cell, method="neb_ao_frac")
 print(
     f"Trimmed frames: {trimmed.start_frame}-{trimmed.end_frame} "
     f"({trimmed.chromosomes.shape[0]} timepoints)"

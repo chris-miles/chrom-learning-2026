@@ -20,7 +20,7 @@ from chromlearn.model_fitting.simulate import simulate_trajectories
 from chromlearn.model_fitting.validate import summary_statistics
 
 # %%
-cells = [trim_trajectory(cell, method="midpoint_neb_ao") for cell in load_condition("rpe18_ctr")]
+cells = [trim_trajectory(cell, method="neb_ao_frac") for cell in load_condition("rpe18_ctr")]
 reference = cells[0]
 basis_xx = BSplineBasis(0.5, 10.0, 8)
 basis_xy = BSplineBasis(0.5, 12.0, 8)

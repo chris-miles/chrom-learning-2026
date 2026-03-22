@@ -36,7 +36,7 @@ plt.rcParams["figure.dpi"] = 110
 
 # %%
 cells_raw = load_condition("rpe18_ctr")
-cells = [trim_trajectory(c, method="midpoint_neb_ao") for c in cells_raw]
+cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
 print(f"Loaded {len(cells)} rpe18_ctr cells")
 
 # %% [markdown]
@@ -286,11 +286,7 @@ print(f"df1 = {p_full_model - p_cc_model}, df2 = {n_obs - p_full_model}")
 print(f"Delta R^2:   {delta_r2:.4f}")
 print(f"Cohen's f^2: {cohens_f2:.4f}  (< 0.02 = negligible, 0.02 = small)")
 print()
-if cohens_f2 < 0.02:
-    print("=> xc effect size is NEGLIGIBLE by Cohen's conventions,")
-    print("   even though p < 0.05 (expected with N > 10,000).")
-else:
-    print("=> xc effect size is non-negligible.")
+print(f"Cohen's f^2 {'< 0.02 (negligible)' if cohens_f2 < 0.02 else '>= 0.02 (non-negligible)'}")
 
 # %% [markdown]
 # ### Distribution of pole-pole distances

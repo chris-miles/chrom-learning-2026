@@ -49,27 +49,27 @@ def test_pole_center() -> None:
 
 def test_trim_trajectory_midpoint() -> None:
     cell = make_fake_cell()
-    trimmed = trim_trajectory(cell, method="midpoint_neb_ao")
+    trimmed = trim_trajectory(cell, method="neb_ao_frac", frac=0.5)
     assert isinstance(trimmed, TrimmedCell)
     # neb=10 (1-based) -> start=9; ao_mean=222 (1-based) -> 221 (0-based)
-    # midpoint = (9 + 221) // 2 = 115; window = 115 - 9 + 1 = 107
+    # endpoint = round(9 + 0.5 * (221 - 9)) = 115; window = 115 - 9 + 1 = 107
     expected_len = 107
     assert trimmed.chromosomes.shape[0] == expected_len
     assert trimmed.centrioles.shape[0] == expected_len
 
 
-def test_trim_trajectory_ao_mean() -> None:
+def test_trim_trajectory_full_window() -> None:
     cell = make_fake_cell()
-    trimmed = trim_trajectory(cell, method="ao_mean")
+    trimmed = trim_trajectory(cell, method="neb_ao_frac", frac=1.0)
     # ao_mean = round((220+225)/2) = 222 (1-based) -> 221 (0-based)
-    # window = 221 - 9 + 1 = 213
+    # endpoint = round(9 + 1.0 * (221 - 9)) = 221; window = 221 - 9 + 1 = 213
     expected_len = 213
     assert trimmed.chromosomes.shape[0] == expected_len
 
 
 def test_trim_preserves_particle_count() -> None:
     cell = make_fake_cell(N=15)
-    trimmed = trim_trajectory(cell, method="ao_mean")
+    trimmed = trim_trajectory(cell, method="neb_ao_frac", frac=1.0)
     assert trimmed.chromosomes.shape[2] == 15
     assert trimmed.centrioles.shape[2] == 2
 
@@ -83,7 +83,7 @@ def test_compute_end_sep_returns_int() -> None:
 
 def test_spindle_frame_axes() -> None:
     cell = make_fake_cell()
-    trimmed = trim_trajectory(cell, method="ao_mean")
+    trimmed = trim_trajectory(cell, method="neb_ao_frac", frac=1.0)
     frame = spindle_frame(trimmed)
     assert isinstance(frame, SpindleFrameData)
     assert frame.axial.shape == (trimmed.chromosomes.shape[0], trimmed.chromosomes.shape[2])

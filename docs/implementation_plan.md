@@ -320,14 +320,16 @@ git commit -m "feat: add data loader for .mat trajectory files"
 
 **Context:** This module trims trajectories to a time window (NEB to endpoint) and computes derived quantities like pole-pole distance, pole center, and spindle-frame coordinates. The `neb`, `ao1`, `ao2` values from the `.mat` files are **1-based** (MATLAB convention). Convert to 0-based Python indices here.
 
-The `end_sep` computation is ported from the MATLAB code in `old_code/aggregate_trajs_dec2022.m` (lines 156-170):
+The `end_sep` computation (inspired by the MATLAB code in `old_code/aggregate_trajs_dec2022.m`):
 1. Compute pole-pole distance over time
-2. Smooth with Savitzky-Golay filter (window=51, the scipy default polynomial order is fine)
-3. Normalize to [0, 1]
-4. Compute velocity (diff of smoothed, normalized distance)
-5. Smooth velocity again with same filter
-6. Normalize velocity by its max absolute value
-7. `end_sep` = first frame after frame 50 where normalized velocity < 0.1
+2. Smooth with Savitzky-Golay filter (window=51)
+3. Compute reference maximum over the core metaphase region `[NEB, midpoint(NEB, AO)]`
+4. Compute a running average (window=5 frames) of the smoothed distance
+5. `end_sep` = first frame where the running average reaches 95% of the reference maximum
+
+Note: the original MATLAB code used a velocity-threshold rule; the Python
+implementation uses a 95%-plateau rule instead, which detects when the spindle
+reaches its target separation rather than when it stops elongating.
 
 - [ ] **Step 1: Write tests**
 

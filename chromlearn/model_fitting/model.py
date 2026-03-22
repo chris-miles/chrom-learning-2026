@@ -104,7 +104,14 @@ class FittedModel:
         input_path = Path(path)
         data = np.load(input_path, allow_pickle=True)
 
+        _VALID_KINDS = {"bspline", "hat"}
+
         def make_basis(kind: str, r_min: float, r_max: float, n_basis: int):
+            if kind not in _VALID_KINDS:
+                raise ValueError(
+                    f"Unknown basis type {kind!r} in saved model; "
+                    f"must be one of {sorted(_VALID_KINDS)}"
+                )
             if kind == "bspline":
                 return BSplineBasis(float(r_min), float(r_max), int(n_basis))
             return HatBasis(float(r_min), float(r_max), int(n_basis))

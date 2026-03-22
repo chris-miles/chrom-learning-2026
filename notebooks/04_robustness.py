@@ -1,11 +1,9 @@
 # %% [markdown]
 # # 04 — Robustness & Hyperparameter Sensitivity
 #
-# Notebook 03 selected a winning interaction topology.  Here we test how
-# sensitive the fitted kernels and cross-validation error are to the
-# hyperparameter choices: basis size, regularisation strengths, estimator
-# discretisation mode, trajectory endpoint method, and diffusion estimation
-# mode.  The goal is to identify which choices matter and which do not.
+# Sensitivity of the winning topology from Notebook 03 to: basis size,
+# regularisation strengths, estimator mode, endpoint method, and diffusion
+# estimation mode.
 
 # %%
 import sys
@@ -35,9 +33,6 @@ plt.rcParams["figure.dpi"] = 110
 
 # %% [markdown]
 # ## Setup
-#
-# Load cells and define the winning topology from Notebook 03.
-# Update `WINNING_TOPOLOGY` below after running that notebook.
 
 # %%
 # Update this after consulting Notebook 03 results.
@@ -45,8 +40,8 @@ WINNING_TOPOLOGY = "poles"
 
 CONDITION = "rpe18_ctr"
 cells_raw = load_condition(CONDITION)
-cells = [trim_trajectory(c, method="midpoint_neb_ao") for c in cells_raw]
-print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to midpoint_neb_ao window).")
+cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
+print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to neb_ao_frac=0.5 window).")
 
 BASE_CONFIG = FitConfig(
     topology=WINNING_TOPOLOGY,
@@ -55,7 +50,7 @@ BASE_CONFIG = FitConfig(
     lambda_ridge=1e-3,
     lambda_rough=1e-3,
     basis_eval_mode="ito",
-    endpoint_method="midpoint_neb_ao",
+    endpoint_method="neb_ao_frac",
     diffusion_mode="msd",
     dt=5.0,
 )
@@ -63,9 +58,7 @@ BASE_CONFIG = FitConfig(
 # %% [markdown]
 # ## Sweep 1: Basis size
 #
-# How many B-spline basis functions do we need?  Too few under-fits the kernel
-# shape; too many overfits and inflates CV error.  We sweep `n_basis` jointly
-# for both the xx and xy kernels (they share the same count for simplicity).
+# Joint sweep of `n_basis` for xx and xy kernels.
 
 # %%
 N_BASIS_VALUES = [4, 6, 8, 10, 12, 16, 20]
@@ -113,9 +106,7 @@ print(f"\nBest n_basis: {best_n_basis}  (CV MSE = {cv_basis[str(best_n_basis)].m
 # %% [markdown]
 # ## Sweep 2: Regularisation
 #
-# We perform two sub-sweeps:
-# 1. Ridge penalty `lambda_ridge` on a log-spaced grid, with `lambda_rough` fixed.
-# 2. Roughness penalty `lambda_rough` on a log-spaced grid, with `lambda_ridge` fixed.
+# Sub-sweep ridge (fix roughness) then roughness (fix ridge).
 
 # %%
 LAMBDA_GRID = np.logspace(-6, 1, 20)
@@ -197,11 +188,8 @@ print(f"Best lambda_rough: {best_rough:.2e}  (CV MSE = {min(rough_means):.4e})")
 # %% [markdown]
 # ## Sweep 3: Estimator mode (Ito / Ito-shift / Stratonovich)
 #
-# The design matrix can be built with three different discretisation
-# conventions.  "ito" uses current positions; "ito_shift" uses the previous
-# positions (which decorrelates localisation noise from the velocity estimate);
-# "strato" uses the midpoint between consecutive frames (Stratonovich
-# convention).  Here we compare CV error and kernel shape side by side.
+# "ito" = current positions, "ito_shift" = previous positions (decorrelates
+# localisation noise), "strato" = midpoint (Stratonovich convention).
 
 # %%
 ESTIMATOR_MODES = ["ito", "ito_shift", "strato"]
@@ -283,22 +271,13 @@ best_mode = min(cv_mode, key=lambda k: cv_mode[k].mean_error)
 print(f"\nBest estimator mode: {best_mode}  (CV MSE = {cv_mode[best_mode].mean_error:.4e})")
 
 # %% [markdown]
-# ## Sweep 4: Endpoint method
+# ## Sweep 4: Endpoint fraction
 #
-# The trajectory is trimmed from NEB to some endpoint.  We compare three
-# strategies:
-# - `"midpoint_neb_ao"` — half-way between NEB and mean AO (default)
-# - `"ao_mean"` — mean of the two anaphase-onset annotations
-# - `"end_sep"` — first frame where spindle separation reaches 95% of its
-#   metaphase plateau
-#
-# Each method may yield a different number of usable cells (some cells produce
-# too-short windows and are skipped with a warning).
+# Sweep the NEB-to-AO fraction (0.33 to 1.0) and also try end_sep (95% plateau).
 
 # %%
-ENDPOINT_METHODS = ["midpoint_neb_ao", "ao_mean", "end_sep"]
+ENDPOINT_FRACS = [0.33, 0.5, 0.67, 0.8, 1.0]
 
-# Re-use cells_raw (loaded at the top) for re-trimming with different methods.
 raw_cells = cells_raw
 print(f"Using {len(raw_cells)} raw CellData objects for endpoint sweep.")
 
@@ -306,20 +285,19 @@ print(f"Using {len(raw_cells)} raw CellData objects for endpoint sweep.")
 cv_endpoint: dict[str, CVResult] = {}
 n_cells_endpoint: dict[str, int] = {}
 
-for method in ENDPOINT_METHODS:
+# Sweep neb_ao_frac values
+for frac in ENDPOINT_FRACS:
+    label = f"frac={frac:.2f}"
     trimmed_method = []
     for raw_cell in raw_cells:
         try:
-            trimmed_method.append(trim_trajectory(raw_cell, method=method))
+            trimmed_method.append(trim_trajectory(raw_cell, method="neb_ao_frac", frac=frac))
         except ValueError as exc:
-            print(f"  Skipping {raw_cell.cell_id} for method='{method}': {exc}")
+            print(f"  Skipping {raw_cell.cell_id} for {label}: {exc}")
 
-    n_cells_endpoint[method] = len(trimmed_method)
+    n_cells_endpoint[label] = len(trimmed_method)
     if len(trimmed_method) < 3:
-        print(
-            f"  method='{method}': only {len(trimmed_method)} cells — "
-            "skipping CV (too few)."
-        )
+        print(f"  {label}: only {len(trimmed_method)} cells — skipping CV (too few).")
         continue
 
     cfg = FitConfig(
@@ -334,50 +312,75 @@ for method in ENDPOINT_METHODS:
         lambda_ridge=BASE_CONFIG.lambda_ridge,
         lambda_rough=BASE_CONFIG.lambda_rough,
         basis_eval_mode=BASE_CONFIG.basis_eval_mode,
-        endpoint_method=method,
+        endpoint_method="neb_ao_frac",
+        endpoint_frac=frac,
         diffusion_mode=BASE_CONFIG.diffusion_mode,
         dt=BASE_CONFIG.dt,
     )
-    cv_endpoint[method] = cross_validate(trimmed_method, cfg)
+    cv_endpoint[label] = cross_validate(trimmed_method, cfg)
     print(
-        f"  method='{method}'  n_cells={len(trimmed_method)}"
-        f"  CV = {cv_endpoint[method].mean_error:.4e}"
-        f" ± {cv_endpoint[method].std_error:.4e}"
+        f"  {label}  n_cells={len(trimmed_method)}"
+        f"  CV = {cv_endpoint[label].mean_error:.4e}"
+        f" +/- {cv_endpoint[label].std_error:.4e}"
     )
+
+# Also try end_sep
+trimmed_end_sep = []
+for raw_cell in raw_cells:
+    try:
+        trimmed_end_sep.append(trim_trajectory(raw_cell, method="end_sep"))
+    except ValueError as exc:
+        print(f"  Skipping {raw_cell.cell_id} for end_sep: {exc}")
+
+n_cells_endpoint["end_sep"] = len(trimmed_end_sep)
+if len(trimmed_end_sep) >= 3:
+    cfg_es = FitConfig(
+        topology=BASE_CONFIG.topology,
+        n_basis_xx=BASE_CONFIG.n_basis_xx,
+        n_basis_xy=BASE_CONFIG.n_basis_xy,
+        r_min_xx=BASE_CONFIG.r_min_xx,
+        r_max_xx=BASE_CONFIG.r_max_xx,
+        r_min_xy=BASE_CONFIG.r_min_xy,
+        r_max_xy=BASE_CONFIG.r_max_xy,
+        basis_type=BASE_CONFIG.basis_type,
+        lambda_ridge=BASE_CONFIG.lambda_ridge,
+        lambda_rough=BASE_CONFIG.lambda_rough,
+        basis_eval_mode=BASE_CONFIG.basis_eval_mode,
+        endpoint_method="end_sep",
+        diffusion_mode=BASE_CONFIG.diffusion_mode,
+        dt=BASE_CONFIG.dt,
+    )
+    cv_endpoint["end_sep"] = cross_validate(trimmed_end_sep, cfg_es)
+    print(
+        f"  end_sep  n_cells={len(trimmed_end_sep)}"
+        f"  CV = {cv_endpoint['end_sep'].mean_error:.4e}"
+        f" +/- {cv_endpoint['end_sep'].std_error:.4e}"
+    )
+else:
+    print(f"  end_sep: only {len(trimmed_end_sep)} cells — skipping CV (too few).")
 
 # %%
 if cv_endpoint:
     fig_ep = plot_cv_curve(cv_endpoint)
-    fig_ep.axes[0].set_title("Sweep 4 — Endpoint method CV comparison")
+    fig_ep.axes[0].set_title("Sweep 4 — Endpoint fraction CV comparison")
     plt.show()
 
     best_endpoint = min(cv_endpoint, key=lambda k: cv_endpoint[k].mean_error)
-    print(f"\nBest endpoint method: {best_endpoint}  (CV MSE = {cv_endpoint[best_endpoint].mean_error:.4e})")
+    print(f"\nBest endpoint: {best_endpoint}  (CV MSE = {cv_endpoint[best_endpoint].mean_error:.4e})")
 else:
-    print("No endpoint methods produced enough cells for CV.")
+    print("No endpoint settings produced enough cells for CV.")
 
-# Print summary of cell counts per method
-print("\nCell counts per endpoint method:")
-for method in ENDPOINT_METHODS:
-    print(f"  {method:20s}: {n_cells_endpoint.get(method, 0)} cells")
+print("\nCell counts per endpoint setting:")
+for label in list(f"frac={f:.2f}" for f in ENDPOINT_FRACS) + ["end_sep"]:
+    print(f"  {label:20s}: {n_cells_endpoint.get(label, 0)} cells")
 
 # %% [markdown]
 # ## Sweep 5: Diffusion estimation mode
 #
-# The SFI approach requires an estimate of the scalar diffusion coefficient D.
-# Four estimators are available:
-# - `"msd"` — naive MSD from displacement variance
-# - `"vestergaard"` — 3-point estimator, robust to localisation noise
-# - `"weak_noise"` — 3-point estimator, robust to drift
-# - `"f_corrected"` — force-subtracted; needs a preliminary fit to remove the
-#   deterministic displacement before estimating the noise variance
-#
-# We compare the scalar D values returned by each mode and assess whether the
-# choice changes the inferred kernel significantly.
+# Compare scalar D across four estimators (msd, vestergaard, weak_noise,
+# f_corrected).
 
 # %%
-# First, build the design matrix and fit kernels to get a FitResult for
-# f_corrected mode.
 from chromlearn.model_fitting.basis import BSplineBasis as _BSplineBasis, HatBasis  # noqa: E402
 
 _BasisClass = _BSplineBasis if BASE_CONFIG.basis_type == "bspline" else HatBasis
@@ -473,8 +476,6 @@ plt.show()
 
 # %% [markdown]
 # ## Summary
-#
-# Collect the best hyperparameter from each sweep and print a summary table.
 
 # %%
 print("=" * 60)
@@ -524,25 +525,3 @@ if D_scalar_by_mode:
     )
 
 print("=" * 60)
-print()
-print("Interpretation notes:")
-print(
-    "  - Basis size: CV error should plateau; choose the smallest n_basis "
-    "where the curve flattens."
-)
-print(
-    "  - Regularisation: broad flat minima indicate the fit is not highly "
-    "sensitive to exact lambda values."
-)
-print(
-    "  - Estimator mode: 'ito_shift' decorrelates localisation noise; "
-    "prefer it if CV error is lower."
-)
-print(
-    "  - Endpoint method: 'midpoint_neb_ao' is conservative (fewer frames); "
-    "'ao_mean' uses the full metaphase window."
-)
-print(
-    "  - Diffusion mode: large spread across modes indicates localisation "
-    "noise or drift bias; 'vestergaard' is a good default."
-)

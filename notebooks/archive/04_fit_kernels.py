@@ -19,7 +19,7 @@ from chromlearn.model_fitting.plotting import plot_kernels, plot_residuals
 from chromlearn.model_fitting.validate import residual_diagnostics
 
 # %%
-cells = [trim_trajectory(cell, method="midpoint_neb_ao") for cell in load_condition("rpe18_ctr")]
+cells = [trim_trajectory(cell, method="neb_ao_frac") for cell in load_condition("rpe18_ctr")]
 basis_xx = BSplineBasis(0.5, 10.0, 10)
 basis_xy = BSplineBasis(0.5, 12.0, 10)
 G, V = build_design_matrix(cells, basis_xx, basis_xy)

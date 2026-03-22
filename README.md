@@ -48,7 +48,7 @@ All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init
 - **Basis evaluation mode** (`basis_eval_mode`): `"ito"` (default), `"ito_shift"` (decorrelates localization noise), `"strato"` (midpoint, reduces finite-dt bias)
 - **Diffusion estimator** (`diffusion_mode`): `"msd"` (default), `"vestergaard"` (noise-robust), `"weak_noise"` (drift-robust), `"f_corrected"` (subtracts inferred force)
 - **Variable D** (`D_variable`): fit D as a function of position along the spindle axis, radial distance, or distance from spindle center
-- **Endpoint method** (`endpoint_method`): `"midpoint_neb_ao"` (default), `"ao_mean"`, `"end_sep"`
+- **Endpoint method** (`endpoint_method`): `"neb_ao_frac"` (default, `endpoint_frac=0.5`) or `"end_sep"`
 - **Basis type** (`basis_type`): `"bspline"` (default) or `"hat"`
 
 ## Docs

@@ -50,10 +50,8 @@ def summary_statistics(chromosomes: np.ndarray, centrosomes: np.ndarray) -> dict
     """
     n_timepoints, _, n_chromosomes = chromosomes.shape
     center = 0.5 * (centrosomes[:, :, 0] + centrosomes[:, :, 1])
-    distances_from_center = np.linalg.norm(
-        np.moveaxis(chromosomes, 2, 1) - center[:, np.newaxis, :],
-        axis=2,
-    )
+    diff = np.moveaxis(chromosomes, 2, 1) - center[:, np.newaxis, :]
+    distances_from_center = np.sqrt(np.nansum(diff**2, axis=2))
 
     pairwise_distances: list[float] = []
     sample_stride = max(1, n_timepoints // 10)
@@ -61,16 +59,18 @@ def summary_statistics(chromosomes: np.ndarray, centrosomes: np.ndarray) -> dict
         positions = chromosomes[time_index].T
         for first in range(n_chromosomes):
             for second in range(first + 1, n_chromosomes):
-                pairwise_distances.append(
-                    float(np.linalg.norm(positions[first] - positions[second]))
-                )
+                delta = positions[first] - positions[second]
+                if np.any(np.isnan(delta)):
+                    continue
+                pairwise_distances.append(float(np.linalg.norm(delta)))
 
     displacements = chromosomes[1:] - chromosomes[:-1]
-    msd_lag1 = float(np.mean(np.sum(displacements**2, axis=1)))
+    sq_disp = np.nansum(displacements**2, axis=1)  # (T-1, N)
+    msd_lag1 = float(np.nanmean(sq_disp))
     return {
-        "mean_dist_from_center": float(np.mean(distances_from_center)),
-        "std_dist_from_center": float(np.std(distances_from_center)),
-        "mean_pairwise_dist": float(np.mean(pairwise_distances)),
-        "std_pairwise_dist": float(np.std(pairwise_distances)),
+        "mean_dist_from_center": float(np.nanmean(distances_from_center)),
+        "std_dist_from_center": float(np.nanstd(distances_from_center)),
+        "mean_pairwise_dist": float(np.mean(pairwise_distances)) if pairwise_distances else float("nan"),
+        "std_pairwise_dist": float(np.std(pairwise_distances)) if pairwise_distances else float("nan"),
         "msd_lag1": msd_lag1,
     }

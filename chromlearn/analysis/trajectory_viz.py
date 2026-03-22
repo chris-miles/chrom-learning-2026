@@ -10,7 +10,7 @@ from chromlearn.io.trajectory import TrimmedCell, spindle_frame, trim_trajectory
 def plot_cell_trajectories(
     cell: CellData | TrimmedCell,
     frame: str = "lab",
-    method: str = "midpoint_neb_ao",
+    method: str = "neb_ao_frac",
     ax: plt.Axes | None = None,
 ) -> plt.Figure:
     trimmed = trim_trajectory(cell, method=method) if isinstance(cell, CellData) else cell
@@ -73,7 +73,7 @@ def plot_cell_trajectories(
 def plot_chromosome_cloud(
     cell: CellData | TrimmedCell,
     timepoint: int = 0,
-    method: str = "midpoint_neb_ao",
+    method: str = "neb_ao_frac",
     ax: plt.Axes | None = None,
 ) -> plt.Figure:
     trimmed = trim_trajectory(cell, method=method) if isinstance(cell, CellData) else cell

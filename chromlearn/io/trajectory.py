@@ -139,29 +139,34 @@ def _ao_mean_index(cell: CellData) -> int:
     return int(round((cell.ao1 + cell.ao2) / 2.0)) - 1
 
 
-def _compute_endpoint(cell: CellData, method: str) -> int:
+def _compute_endpoint(cell: CellData, method: str, frac: float = 0.5) -> int:
     neb_index = cell.neb - 1
-    if method == "ao_mean":
-        return _ao_mean_index(cell)
-    if method == "midpoint_neb_ao":
-        return (neb_index + _ao_mean_index(cell)) // 2
+    if method == "neb_ao_frac":
+        ao_index = _ao_mean_index(cell)
+        return int(round(neb_index + frac * (ao_index - neb_index)))
     if method == "end_sep":
         return compute_end_sep(cell)
     raise ValueError(
         f"Unknown endpoint method '{method}'. "
-        "Expected 'midpoint_neb_ao', 'ao_mean', or 'end_sep'."
+        "Expected 'neb_ao_frac' or 'end_sep'."
     )
 
 
 def trim_trajectory(
-    cell: CellData, method: str = "midpoint_neb_ao", min_frames: int = 100
+    cell: CellData,
+    method: str = "neb_ao_frac",
+    frac: float = 0.5,
+    min_frames: int = 100,
 ) -> TrimmedCell:
     """Trim cell trajectories to the window ``[NEB, endpoint]``.
 
     Args:
         cell: Raw cell data (``neb``, ``ao1``, ``ao2`` are 1-based MATLAB indices).
-        method: Endpoint strategy -- ``"midpoint_neb_ao"`` (default),
-            ``"ao_mean"``, or ``"end_sep"``.
+        method: Endpoint strategy -- ``"neb_ao_frac"`` (default) or
+            ``"end_sep"``.
+        frac: Fraction of the ``[NEB, AO]`` window to use (only for
+            ``"neb_ao_frac"``).  ``0.5`` = midpoint (default), ``1.0`` = full
+            window to AO.
         min_frames: Minimum number of frames required after trimming.
 
     Returns:
@@ -171,7 +176,7 @@ def trim_trajectory(
         ValueError: If the trimmed trajectory has fewer than *min_frames* frames.
     """
     start = max(0, cell.neb - 1)
-    end = min(cell.centrioles.shape[0] - 1, _compute_endpoint(cell, method))
+    end = min(cell.centrioles.shape[0] - 1, _compute_endpoint(cell, method, frac))
     if end < start:
         end = start
     n_frames = end - start + 1

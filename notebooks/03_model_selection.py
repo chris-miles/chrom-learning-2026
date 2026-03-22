@@ -10,16 +10,7 @@
 # | **poles\_and\_chroms** | both poles | yes |
 # | **center\_and\_chroms** | pole midpoint | yes |
 #
-# The analysis follows these steps:
-# 1. Load and trim `rpe18_ctr` data.
-# 2. Estimate basis domains from observed distance distributions.
-# 3. Fit all four models with the same hyperparameters.
-# 4. Compare via leave-one-cell-out cross-validation.
-# 5. Inspect bootstrap confidence bands around each learned kernel.
-# 6. Check physical plausibility of the chromosome-chromosome kernel.
-# 7. Forward simulation: real vs simulated trajectories in spindle frame.
-# 8. Verdict table.
-# 9. **Bonus**: refit the winner with variable D(x) and compare.
+# Selection criteria: leave-one-cell-out CV, rollout validation, bootstrap CIs.
 
 # %%
 import sys
@@ -58,8 +49,8 @@ plt.rcParams["figure.dpi"] = 110
 
 # %%
 cells_raw = load_condition("rpe18_ctr")
-cells = [trim_trajectory(c, method="midpoint_neb_ao") for c in cells_raw]
-print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to midpoint_neb_ao window)")
+cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
+print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to neb_ao_frac=0.5 window)")
 for c in cells:
     T, _, N = c.chromosomes.shape
     print(f"  {c.cell_id}: {T} frames, {N} chromosomes")
@@ -67,15 +58,9 @@ for c in cells:
 # %% [markdown]
 # ## Estimate basis domains from data
 #
-# We sweep through all cells and collect the empirical distributions of:
-# - Chromosome-to-partner distances (xy) — depends on topology
-# - Chromosome-to-chromosome distances (xx) — topology-independent
-#
-# For forward simulation, we want the fitted kernels to stay defined across the
-# empirical distance range instead of developing zero-force holes near the
-# origin or truncating the observed long-distance tail.  We therefore anchor
-# the lower limit at 0.3 um (below our tracking resolution) and use the
-# observed maximum distance as the upper limit.
+# Sweep all cells to get empirical distance distributions for xy (depends on
+# topology) and xx (topology-independent).  Lower limit anchored at 0.3 um
+# (below tracking resolution); upper limit from observed max distance.
 
 # %%
 TOPOLOGIES = ["poles", "center", "poles_and_chroms", "center_and_chroms"]
@@ -264,14 +249,11 @@ for rank, topology in enumerate(sorted_topo):
     print(f"  #{rank + 1}  {topology:<22}  MSE={r.mean_error:.8f}  "
           f"(Δbest={delta:+.2e})")
 
-print("\nNote: D_x is estimated from the in-sample residual variance, so "
-      "small fit-quality gaps usually imply small D_x gaps.")
 
 # %% [markdown]
 # ## Bootstrap kernel confidence bands
 #
-# For each topology we draw 250 bootstrap resamples of the cells and refit
-# the model.  The shaded band shows the 5–95% bootstrap quantile interval.
+# 250 cell-level resamples per topology; shaded band = 5–95% quantile interval.
 
 # %%
 N_BOOT = 50
@@ -713,17 +695,6 @@ print(f"  Endpoint score  = {rollout_endpoint_score[best_topology_endpoint]:.5f}
 print(f"  Rollout score   = {rollout_time_score[best_topology_endpoint]:.5f}")
 print(f"  Final W1 score  = {rollout_dist_score[best_topology_endpoint]:.5f}")
 print(f"  CV MSE          = {cv_results[best_topology_endpoint].mean_error:.8f}")
-print()
-print("Notes:")
-print("  - 'poles' and 'center' differ in whether both poles or only their")
-print("    midpoint enter the xy kernel.  'center' has half the partner count")
-print("    and a sparser design matrix.")
-print("  - 'poles_and_chroms' / 'center_and_chroms' add a chromosome-chromosome")
-print("    term f_xx.  This roughly doubles parameter count and should help only")
-print("    if it improves both local prediction and multi-step rollout behavior.")
-print("  - Use rollout metrics for simulation realism; use 1-step CV for local")
-print("    velocity prediction.  If they disagree, the model is fitting local")
-print("    drift better than it reproduces held-out trajectory structure.")
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")
@@ -732,68 +703,61 @@ fig.suptitle(f"Best model kernels — {best_topology}", y=1.02)
 plt.show()
 
 # %% [markdown]
-# ## Bonus: variable D(x) on the winning model
+# ## Exploratory: spatially-varying diffusion D(x)
 #
-# The scalar D assumption may be overly restrictive.  Chromosomes near the
-# metaphase plate may have different diffusivity than those near the poles.
-# We estimate D as a function of axial position using the Vestergaard estimator
-# and compare the spatially-resolved D(x) to the scalar estimate.
+# Check whether D shows spatial dependence by estimating it as a function of
+# three coordinates — axial, radial, and distance from spindle center —
+# using the Vestergaard estimator pooled across all cells.
 
 # %%
-from chromlearn.model_fitting.diffusion import BSplineBasis as _BSplineBasisDiff
-from chromlearn.model_fitting.diffusion import DiffusionResult, estimate_diffusion_variable
+from chromlearn.model_fitting.diffusion import estimate_diffusion_variable
 from chromlearn.model_fitting.plotting import plot_diffusion
 
-# Use the same basis domain as the FitConfig r_min_D / r_max_D defaults
 N_BASIS_D = 8
-R_MIN_D = -8.0
-R_MAX_D = 8.0
 
-basis_D = BSplineBasis(R_MIN_D, R_MAX_D, N_BASIS_D)
+# Coordinate-specific basis domains
+COORD_DOMAINS = {
+    "axial":    (-8.0, 8.0),
+    "radial":   (0.0, 6.0),
+    "distance": (0.0, 10.0),
+}
 
-print(f"Estimating variable D(axial) for topology '{best_topology}'...")
-diff_result = estimate_diffusion_variable(
-    cells,
-    basis_D=basis_D,
-    coord_name="axial",
-    dt=5.0,
-    mode="vestergaard",
-    lambda_ridge=LAMBDA,
-)
-print(f"  Scalar D (reference): {diff_result.D_scalar:.4f} um^2/s")
-
-# Evaluate on a grid
-coords_grid = np.linspace(R_MIN_D, R_MAX_D, 300)
-D_variable_vals = diff_result.evaluate(coords_grid)
-print(f"  D(x) range: [{D_variable_vals.min():.4f}, {D_variable_vals.max():.4f}] um^2/s")
+diff_results = {}
+for coord_name, (r_min, r_max) in COORD_DOMAINS.items():
+    basis_D = BSplineBasis(r_min, r_max, N_BASIS_D)
+    print(f"Estimating D({coord_name}) for topology '{best_topology}'...")
+    diff_results[coord_name] = estimate_diffusion_variable(
+        cells,
+        basis_D=basis_D,
+        coord_name=coord_name,
+        dt=5.0,
+        mode="vestergaard",
+        lambda_ridge=LAMBDA,
+    )
+    dr = diff_results[coord_name]
+    grid = np.linspace(r_min, r_max, 300)
+    vals = dr.evaluate(grid)
+    print(f"  Scalar D (reference): {dr.D_scalar:.4f} um^2/s")
+    print(f"  D({coord_name}) range: [{vals.min():.4f}, {vals.max():.4f}] um^2/s")
 
 # %%
-fig = plot_diffusion(diff_result)
-fig.suptitle(f"Variable diffusion D(axial) — {best_topology} winner", y=1.02)
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+for ax, (coord_name, dr) in zip(axes, diff_results.items()):
+    r_min, r_max = COORD_DOMAINS[coord_name]
+    grid = np.linspace(r_min, r_max, 300)
+    ax.plot(grid, dr.evaluate(grid), "C0", linewidth=2)
+    ax.axhline(dr.D_scalar, color="0.5", linestyle="--", linewidth=0.8, label="Scalar average")
+    ax.set_xlabel(f"Position ({coord_name}, um)")
+    ax.set_ylabel("D (um\u00b2/s)")
+    ax.set_title(f"D({coord_name})")
+    ax.legend(fontsize=8)
+fig.suptitle(f"Variable diffusion — {best_topology} winner", y=1.02)
+fig.tight_layout()
 plt.show()
 
 # %%
-# Compare scalar vs variable D: refit best model with variable D and simulate
-winner_config_scalar = configs[best_topology]
-winner_config_varD = FitConfig(
-    topology=best_topology,
-    n_basis_xx=N_BASIS,
-    n_basis_xy=N_BASIS,
-    r_min_xx=winner_config_scalar.r_min_xx,
-    r_max_xx=winner_config_scalar.r_max_xx,
-    r_min_xy=winner_config_scalar.r_min_xy,
-    r_max_xy=winner_config_scalar.r_max_xy,
-    basis_type="bspline",
-    lambda_ridge=LAMBDA,
-    lambda_rough=LAMBDA,
-    basis_eval_mode="ito",
-    dt=5.0,
-    D_variable=True,
-    n_basis_D=N_BASIS_D,
-    r_min_D=R_MIN_D,
-    r_max_D=R_MAX_D,
-    D_coordinate="axial",
-)
+# Simulate one example cell: scalar D vs variable D(axial)
+diff_result = diff_results["axial"]
 
 # Scalar model is already fit; simulate with variable D using the same theta
 # but sampling D from D(x) at each chromosome's current axial position.
@@ -988,19 +952,12 @@ real_axial_mean = np.nanmean(sf_real.axial, axis=1)
 mse_scalar = float(np.nanmean((np.nanmean(sf_scalar.axial, axis=1) - real_axial_mean) ** 2))
 mse_varD = float(np.nanmean((np.nanmean(sf_varD.axial, axis=1) - real_axial_mean) ** 2))
 
-print(f"Single-cell simulation MSE (axial mean trajectory):")
+print(f"Single-cell MSE (mean axial trajectory):")
 print(f"  Scalar D:    {mse_scalar:.5f} um^2")
 print(f"  Variable D:  {mse_varD:.5f} um^2")
-
-if mse_varD < mse_scalar * 0.9:
-    print("  => Variable D noticeably improves simulation fidelity.")
-elif mse_varD < mse_scalar:
-    print("  => Variable D marginally improves simulation fidelity.")
-else:
-    print("  => Scalar D is comparable; variable D provides no clear advantage "
-          "on this single cell.")
-
 print()
 print(f"Scalar D estimate:        {winner_model.D_x:.4f} um^2/s")
 print(f"Vestergaard scalar mean:  {diff_result.D_scalar:.4f} um^2/s")
-print(f"D(x) range (axial -8..8): [{D_variable_vals.min():.4f}, {D_variable_vals.max():.4f}] um^2/s")
+axial_grid = np.linspace(*COORD_DOMAINS["axial"], 300)
+axial_vals = diff_result.evaluate(axial_grid)
+print(f"D(axial) range:           [{axial_vals.min():.4f}, {axial_vals.max():.4f}] um^2/s")

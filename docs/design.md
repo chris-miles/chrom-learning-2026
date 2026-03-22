@@ -157,9 +157,11 @@ or trimmed from frame 1.
 ### Time window
 
 Trajectories are trimmed from NEB to a configurable endpoint:
-- `"midpoint_neb_ao"` (default): midpoint between NEB and mean(ao1, ao2)
-- `"ao_mean"`: mean of ao1 and ao2
-- `"end_sep"`: when spindle pole separation velocity drops below 10% of max (computed from smoothed pole-pole distance, ported from MATLAB)
+- `"neb_ao_frac"` (default): `NEB + frac * (AO - NEB)` where AO = mean(ao1, ao2).
+  Default `frac=0.5` (midpoint); `frac=1.0` gives the full window to AO.
+- `"end_sep"`: first frame where a running average of smoothed pole-pole distance
+  reaches 95% of the metaphase-region maximum. Non-default; can be sensitive to
+  smoothing parameters.
 
 Same time window for all chromosomes within a cell (no per-chromosome attachment masking in initial implementation).
 
@@ -223,7 +225,8 @@ Parameters are collected in a `FitConfig` dataclass passed to fitting functions.
 @dataclass
 class FitConfig:
     # Time window
-    endpoint_method: str = "midpoint_neb_ao"  # or "ao_mean", "end_sep"
+    endpoint_method: str = "neb_ao_frac"  # or "end_sep"
+    endpoint_frac: float = 0.5  # fraction of [NEB, AO] window
     # Basis
     n_basis_xx: int = 10
     n_basis_xy: int = 10
@@ -266,7 +269,7 @@ The `topology` field controls which interaction partners are used:
 
 **io/trajectory.py**
 - `trim_trajectory(cell, endpoint_method) -> TrimmedCell`: Apply time window
-- `compute_end_sep(pole_positions) -> int`: Port MATLAB spindle separation endpoint detection
+- `compute_end_sep(cell) -> int`: Detect 95%-plateau of smoothed pole-pole distance
 - `spindle_frame(cell) -> SpindleFrameData`: Compute axial/radial coordinates relative to pole-pole axis (for visualization)
 - `pole_pole_distance(cell) -> array`: Distance between centrosomes over time
 - `pole_center(cell) -> array`: Midpoint of two centrosomes over time
@@ -347,7 +350,7 @@ The `topology` field controls which interaction partners are used:
 
 **04_fit_kernels.ipynb**: Fit f_xx and f_xy on pooled rpe18_ctr data. Plot learned kernels with bootstrap confidence bands. Run residual diagnostics. Primary results notebook.
 
-**05_model_selection.ipynb**: Systematic comparison across basis sizes (4-20), regularization strengths, endpoint choices (midpoint vs end_sep vs ao). Possible future: with/without spindle-axis angle dependence. Cross-validation curves.
+**05_model_selection.ipynb**: Systematic comparison across basis sizes (4-20), regularization strengths, endpoint fraction, and end_sep. Possible future: with/without spindle-axis angle dependence. Cross-validation curves.
 
 **06_forward_simulation.ipynb**: Simulate from the learned model using real centrosome trajectories as input. Compare simulated chromosome statistics to real data: radial distributions, spacing, MSD, congression dynamics.
 
@@ -396,6 +399,15 @@ Fitting rod311 (dynein inhibition), CENP-E inhibition, hesperidin, etc. and comp
 
 ### Multi-lag / SFI noise-aware estimators
 ~~Plain one-step Euler-Maruyama increments are biased when localization noise is significant relative to true displacement.~~ **Implemented:** Multi-point basis evaluation modes (Ito-shift, Stratonovich) and noise-robust diffusion estimators (Vestergaard, weak-noise) are now available as options. Variable D(x) fitting is also implemented. See `diffusion.py` and the `basis_eval_mode` parameter.
+
+### Near-term scientific priorities
+
+Based on code audit (March 2026):
+
+1. **Add a one-body spindle-frame drift baseline** — `F(z, r_perp)` with no chromosome-chromosome kernel. The learned `f_xx(r)` can absorb omitted spindle geometry or tracking artifacts; a spindle-frame-only baseline would expose this.
+2. **Add a simpler parametric external-force baseline** — linear/piecewise-linear pole attraction. If this performs comparably, flexible spline kernels shouldn't be over-interpreted.
+3. **Wire variable D(x) into rollout scoring** or keep it explicitly exploratory. Currently D(x) is fitted but not used in CV or rollout validation.
+4. **Interpret f_xx cautiously** — short-range repulsion is physically plausible; long-range features may reflect shared geometry or tracking artifacts rather than direct chromosome-chromosome forces.
 
 ### Neural baselines (GNN/NRI)
 A graph neural network could learn more flexible (non-radial, many-body) interactions. Useful as comparison: if it fits much better, the pairwise radial assumption is missing something; if similar, it validates the simpler model. **Trade-off:** harder to interpret, easier to overfit, heavier dependencies (PyTorch/JAX). Should only be attempted after the interpretable pipeline is solid.
