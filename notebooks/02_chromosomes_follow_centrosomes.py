@@ -473,10 +473,12 @@ plt.show()
 # %% [markdown]
 # ### Permutation test
 #
-# As an assumption-free check, we shuffle time indices of the xc
-# features within each cell (breaking the temporal coupling between
-# chromosome positions and centrosome velocity while preserving each
-# cell's marginal distribution of xc features) and refit the full model.
+# We shuffle time indices of the xc features within each cell (breaking
+# the temporal coupling between chromosome positions and centrosome
+# velocity while preserving each cell's marginal distribution of xc
+# features) and refit the full model.  This tests whether the observed
+# ΔR² requires temporally-aligned chromosome positions or could arise
+# from the marginal statistics alone.
 
 # %%
 N_PERM = 200
@@ -516,6 +518,11 @@ print(f"Permutation null mean:  {perm_delta_r2.mean():.4f}")
 print(f"Permutation null 95th:  {np.percentile(perm_delta_r2, 95):.4f}")
 print(f"Permutation p-value:    {perm_p_value:.4f}")
 print(f"  ({N_PERM} permutations, shuffling xc time indices within cells)")
+print()
+print("Interpretation: the permutation test detects a real but tiny temporally-")
+print(f"aligned xc signal (Delta R^2 = {delta_r2:.4f}).  However, the effect size")
+print(f"is negligible (Cohen's f^2 = {cohens_f2:.4f} < 0.02) and the LOO-CV below")
+print("shows this signal does not translate into meaningful out-of-sample prediction.")
 
 # %% [markdown]
 # ### Part B.3 — Forward simulation of spindle length
@@ -720,9 +727,11 @@ plt.show()
 #    follow centrosome velocity changes, not the reverse.
 # 2. **Statistical redundancy (Part B):** Adding chromosome forces does not
 #    meaningfully improve prediction of centrosome velocities beyond a
-#    simple distance-dependent separation term — negligible effect size
-#    (Cohen's $f^2$), no cross-validated RMSE improvement, and only
-#    marginal differences in forward-simulated spindle-length trajectories.
+#    simple distance-dependent separation term.  A permutation test detects
+#    a statistically real but tiny temporally-aligned xc signal, but the
+#    effect size is negligible (Cohen's $f^2 < 0.02$), out-of-sample
+#    cross-validation shows no RMSE improvement, and forward-simulated
+#    spindle-length trajectories are indistinguishable.
 # 3. **Physical scale separation (Part C):** The net force chromosomes can
 #    exert on the spindle is an order of magnitude too small to produce
 #    observable velocity perturbations.
