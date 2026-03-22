@@ -11,9 +11,10 @@ Infers effective distance-dependent forces between chromosomes (and from centros
 - `chromlearn/` — Python package
   - `io/` — Data loading, trajectory processing, cell catalog
   - `model_fitting/` — Basis functions, design matrix, regression, simulation, validation, diffusion estimation
-  - `analysis/` — Supporting analyses (lag correlation, trajectory visualization)
+  - `analysis/` — Supporting analyses (lag correlation, trajectory visualization, velocity-vs-distance)
 - `notebooks/` — Jupyter-compatible `.py` notebooks (primary interface)
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
+  - `01b_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time (binned comparison, effect sizes, chromosome-level permutation test)
   - `02_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
   - `03_model_selection.py` — Compares 4 interaction topologies (poles, center, ±chromosomes) via cross-validation, kernel plots, physical plausibility, and forward simulation
   - `04_robustness.py` — Hyperparameter sensitivity: basis size, regularization, estimator mode, endpoint method, diffusion estimation

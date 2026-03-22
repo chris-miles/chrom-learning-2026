@@ -204,9 +204,11 @@ chrom_learning_2026/               # repository root
 │   └── analysis/                  # Independent supporting analyses
 │       ├── __init__.py
 │       ├── lag_correlation.py     # Velocity autocorrelation (centrosome vs chromosome)
+│       ├── velocity_vs_distance.py # Binned velocity analysis: spatial vs temporal dependence
 │       └── trajectory_viz.py      # Single-cell trajectory visualization, spindle-frame plots
 ├── notebooks/                     # Primary interface (percent-cell .py format)
 │   ├── 01_explore_data.py         # Data loading, metadata, trajectory visualization
+│   ├── 01b_velocity_spatial_not_temporal.py  # Velocity depends on distance, not time
 │   ├── 02_chromosomes_follow_centrosomes.py  # Centrosome autonomy justification
 │   ├── 03_model_selection.py      # 4-topology comparison, CV, forward simulation
 │   └── 04_robustness.py           # Hyperparameter sensitivity sweeps
@@ -343,6 +345,8 @@ The `topology` field controls which interaction partners are used:
 ## Notebook Descriptions
 
 **01_explore_data.ipynb**: Load a few rpe18_ctr cells, inspect array shapes, plot raw 3D trajectories, verify NEB/AO timing, sanity-check pole-pole distances and chromosome counts. Purpose: confirm data loading works correctly.
+
+**01b_velocity_spatial_not_temporal.py**: Establishes that chromosome velocity is determined by distance from the spindle center, not time. Replicates the old paper's binned velocity comparison (Fig 2A–B) with Cohen's d effect sizes and a chromosome-level permutation test. Justifies dropping time-dependence before fitting spatial force models.
 
 **02_lag_correlation.ipynb**: Run lag correlation analysis across all rpe18_ctr cells. Produce the supplementary figure showing chromosomes follow centrosomes. This justifies treating centrosomes as external in the model.
 
