@@ -366,14 +366,10 @@ class TypedNRILite(nn.Module):
             depth=3,
         )
 
+        msg_input_dim = 3 + 3 + 1 + 2 * type_embed_dim  # rel_pos, rel_vel, dist, types
         self.message_mlps = nn.ModuleList(
             [
-                mlp(
-                    4 * 3 + 2 * 3 + 2 * type_embed_dim,
-                    msg_hidden,
-                    msg_dim,
-                    depth=3,
-                )
+                mlp(msg_input_dim, msg_hidden, msg_dim, depth=3)
                 for _ in range(edge_types - 1)
             ]
         )
@@ -442,14 +438,12 @@ class TypedNRILite(nn.Module):
 
         rel_pos = sender_pos - receiver_pos
         rel_vel = sender_vel - receiver_vel
+        rel_dist = torch.norm(rel_pos, dim=-1, keepdim=True).clamp(min=1e-6)
         edge_input = torch.cat(
             [
-                sender_pos,
-                receiver_pos,
-                sender_vel,
-                receiver_vel,
                 rel_pos,
                 rel_vel,
+                rel_dist,
                 sender_type,
                 receiver_type,
             ],
