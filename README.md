@@ -1,6 +1,6 @@
 # chromlearn
 
-Learning pairwise interaction kernels from chromosome and centrosome trajectories during mitosis, using Stochastic Force Inference (SFI/Ronceray).
+Learning pairwise interaction kernels from chromosome and centrosome trajectories during mitosis, using an approach inspired by [Stochastic Force Inference](https://github.com/ronceray/StochasticForceInference) (SFI/Ronceray).
 
 ## What this does
 
@@ -55,9 +55,17 @@ All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init
 - **Endpoint method** (`endpoint_method`): `"neb_ao_frac"` (default, `endpoint_frac=0.5`) or `"end_sep"`
 - **Basis type** (`basis_type`): `"bspline"` (default) or `"hat"`
 
+## Methodology
+
+This project uses SFI-inspired projection inference with cross-validated interaction topologies. We fit pairwise radial kernels via penalized regression (as in SFI's projection framework) but differ from the full SFI/PASTIS pipeline in two ways: (1) model selection compares a small set of physically motivated topologies rather than sparse selection over a large basis library, and (2) spatially varying diffusion D(x) is estimated in a second stage from residuals rather than jointly inferred. Notebook 06 validates that the diffusion-gradient correction is negligible for our data.
+
+### References
+
+- **SFI (OLI)**: A. Frishman & P. Ronceray, *Learning force fields from stochastic trajectories*, Phys. Rev. X 10, 021009 (2020).
+- **ULI**: D. B. Bruckner, P. Ronceray & C. P. Broedersz, *Inferring the dynamics of underdamped stochastic systems*, Phys. Rev. Lett. 125, 058103 (2020).
+- **PASTIS**: A. Gerardos & P. Ronceray, *Parsimonious model selection for stochastic dynamics*, arXiv:2501.10339 (2025).
+- **SFI code**: https://github.com/ronceray/StochasticForceInference
+
 ## Docs
 
-- `docs/design.md` — Full design specification (architecture, model, decisions, future extensions)
-- `docs/llm_fitting_plan.md` — Mathematical background and roadmap
-- `docs/specs/` — Detailed feature specs (multi-point estimators, variable diffusion, etc.)
-- `docs/implementation_plan.md` — Step-by-step build plan
+Build-phase design docs, specs, and implementation plans are in `docs/archive/`.

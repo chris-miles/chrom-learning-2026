@@ -12,6 +12,11 @@ build/
 
 # Data (large binary files)
 data/*.mat
+data/excluded_*/
+
+# Reference PDFs and text extracts (internal only)
+docs/*.pdf
+docs/*.txt
 
 # Results/outputs
 results/

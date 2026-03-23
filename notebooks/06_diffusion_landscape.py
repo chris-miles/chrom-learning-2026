@@ -312,6 +312,84 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
+# ## Diffusion-gradient correction magnitude
+#
+# In a full SFI treatment, D(x) enters the force inference jointly: the Ito
+# drift includes a "spurious force" term grad(D).  Our two-stage approach
+# (fit force first, then estimate D from residuals) neglects this correction.
+# Here we check whether grad(D) is small compared to the inferred force,
+# which would justify the decoupled approach.
+#
+# For radial pairwise forces, the relevant comparison is dD/dr vs F_xy(r)
+# at the same distances, since the centrosome-chromosome interaction dominates
+# the force budget.
+
+# %%
+# Numerical derivative of D(distance) from the Vestergaard fit
+dr_vest = diff_results["vestergaard"]
+eval_r = np.linspace(R_MIN_D + 0.2, R_MAX_D - 0.2, 180)
+D_vals = dr_vest.evaluate(eval_r)
+
+# Central-difference gradient dD/dr
+dr_step = eval_r[1] - eval_r[0]
+dD_dr = np.gradient(D_vals, dr_step)
+
+# Inferred centrosome-chromosome force at the same distances
+F_xy = model.evaluate_kernel("xy", eval_r)
+
+# Also compute for f_corrected estimator as a cross-check
+dr_fcorr = diff_results["f_corrected"]
+D_vals_fc = dr_fcorr.evaluate(eval_r)
+dD_dr_fc = np.gradient(D_vals_fc, dr_step)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+# Left panel: force vs dD/dr
+ax = axes[0]
+ax.plot(eval_r, np.abs(F_xy), "C0-", linewidth=2, label="|F_xy(r)|")
+ax.plot(eval_r, np.abs(dD_dr), "C2--", linewidth=2, label="|dD/dr| (Vestergaard)")
+ax.plot(eval_r, np.abs(dD_dr_fc), "C3:", linewidth=2, label="|dD/dr| (f-corrected)")
+ax.set_xlabel("Distance from spindle center (um)")
+ax.set_ylabel("Magnitude (um/s or um$^2$/s/um)")
+ax.set_title("Inferred force vs diffusion gradient")
+ax.legend(fontsize=8)
+ax.set_yscale("log")
+
+# Right panel: ratio |dD/dr| / |F_xy|
+ax = axes[1]
+safe_F = np.where(np.abs(F_xy) > 1e-12, np.abs(F_xy), np.nan)
+ratio_vest = np.abs(dD_dr) / safe_F
+ratio_fc = np.abs(dD_dr_fc) / safe_F
+ax.plot(eval_r, ratio_vest, "C2-", linewidth=2, label="Vestergaard")
+ax.plot(eval_r, ratio_fc, "C3--", linewidth=2, label="f-corrected")
+ax.axhline(0.1, color="0.5", linestyle=":", linewidth=1, label="10% threshold")
+ax.set_xlabel("Distance from spindle center (um)")
+ax.set_ylabel("|dD/dr| / |F_xy|")
+ax.set_title("Diffusion gradient as fraction of inferred force")
+ax.legend(fontsize=8)
+ax.set_ylim(0, min(2.0, np.nanmax(ratio_vest) * 1.2))
+
+fig.suptitle("Diffusion-gradient correction: magnitude check")
+fig.tight_layout()
+plt.show()
+
+# %%
+# Print summary statistics
+median_ratio_vest = float(np.nanmedian(ratio_vest))
+median_ratio_fc = float(np.nanmedian(ratio_fc))
+max_ratio_vest = float(np.nanmax(ratio_vest[np.isfinite(ratio_vest)]))
+max_ratio_fc = float(np.nanmax(ratio_fc[np.isfinite(ratio_fc)]))
+print(f"Vestergaard:  median |dD/dr|/|F| = {median_ratio_vest:.3f}, "
+      f"max = {max_ratio_vest:.3f}")
+print(f"F-corrected:  median |dD/dr|/|F| = {median_ratio_fc:.3f}, "
+      f"max = {max_ratio_fc:.3f}")
+if median_ratio_vest < 0.1 and median_ratio_fc < 0.1:
+    print("=> Diffusion gradient is small relative to inferred force.")
+    print("   Two-stage (force first, then D) approach is justified.")
+else:
+    print("=> Diffusion gradient is NOT negligible. Consider joint inference.")
+
+# %% [markdown]
 # ## Summary
 #
 # **Questions answered:**
