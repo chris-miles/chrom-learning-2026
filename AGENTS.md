@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 #
-# AGENTS.md mirrors this file. Keep them in sync when either is updated.
+# This file mirrors CLAUDE.md. Keep them in sync when either is updated.
 
 ## Project
 
