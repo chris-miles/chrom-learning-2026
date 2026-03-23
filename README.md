@@ -20,7 +20,7 @@ Infers effective distance-dependent forces between chromosomes (and from centros
   - `05_robustness.py` — Hyperparameter sensitivity: basis size, regularization, estimator mode, endpoint method, diffusion estimation
   - `06_diffusion_landscape.py` — Spatially-varying diffusion D(x): multi-estimator comparison, per-cell consistency, coordinate axis comparison
   - `07_per_cell_heterogeneity.py` — Per-cell kernel variability vs pooled bootstrap uncertainty, correlation with cell features
-  - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1, Kid/Kif4A)
+  - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1)
 - `data/` — Raw `.mat` trajectory files (not tracked in git)
 - `docs/` — Design spec and planning documents
 
