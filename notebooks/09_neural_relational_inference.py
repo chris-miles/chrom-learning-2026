@@ -102,7 +102,7 @@ for cell in cells:
 # Each training sample is a short window ending at time `t`:
 #
 # - history of node positions over `HISTORY` frames
-# - next-step chromosome velocity target `(x(t+1) - x(t)) / dt`
+# - next-step chromosome velocity target in the pole-centered frame
 #
 # Nodes are:
 #
@@ -167,14 +167,26 @@ def extract_windows(cells, history=HISTORY):
             node_mask = np.zeros(MAX_NODES, dtype=bool)
             target_mask = np.zeros(MAX_NODES, dtype=bool)
 
-            # Anchor each sample to the pole midpoint at the current frame so
-            # the model does not spend capacity on absolute translation.
-            origin = 0.5 * (centrioles[t, :, 0] + centrioles[t, :, 1])  # (3,)
+            # Center each history frame on its own pole midpoint so framewise
+            # global translation jitter does not leak into the encoder inputs.
+            origin_hist = 0.5 * (
+                centrioles[hist_slice, :, 0] + centrioles[hist_slice, :, 1]
+            )  # (history, 3)
 
-            chrom_hist = chromosomes[hist_slice].transpose(0, 2, 1) - origin
-            chrom_cur = chromosomes[t].T - origin
-            chrom_next = chromosomes[t + 1].T - origin
-            pole_hist = centrioles[hist_slice].transpose(0, 2, 1) - origin
+            chrom_hist = (
+                chromosomes[hist_slice].transpose(0, 2, 1)
+                - origin_hist[:, np.newaxis, :]
+            )
+            origin_cur = origin_hist[-1]
+            origin_next = 0.5 * (
+                centrioles[t + 1, :, 0] + centrioles[t + 1, :, 1]
+            )  # (3,)
+            chrom_cur = chromosomes[t].T - origin_cur
+            chrom_next = chromosomes[t + 1].T - origin_next
+            pole_hist = (
+                centrioles[hist_slice].transpose(0, 2, 1)
+                - origin_hist[:, np.newaxis, :]
+            )
 
             pos_hist[:, valid_indices, :] = chrom_hist[:, valid_indices, :]
             pos_hist[:, POLE_SLOTS, :] = pole_hist
@@ -768,6 +780,9 @@ plt.show()
 #
 # We compare the neural held-out one-step velocity error with the winning SFI
 # topology (`poles`) from NB04/05.
+#
+# Note: the NRI-lite target is pole-centered to reduce frame-jiggle sensitivity,
+# so this side-by-side error comparison is only approximate.
 
 # %%
 from chromlearn.model_fitting import FitConfig
