@@ -4,7 +4,11 @@ Learning pairwise interaction kernels from chromosome and centrosome trajectorie
 
 ## What this does
 
-Infers effective distance-dependent forces between chromosomes (and from centrosomes to chromosomes) from 3D microscopy tracking data of dividing cells. Uses an overdamped Langevin model with pairwise radial interaction kernels expanded in a B-spline basis, solved via penalized linear regression.
+Infers effective distance-dependent forces between chromosomes (and from centrosomes to chromosomes) from 3D microscopy tracking data of dividing cells.
+
+The core method treats chromosome motion as overdamped Langevin dynamics driven by pairwise radial forces. SFI projects the observed velocity field onto a basis of pairwise interaction functions and solves for the coefficients via penalized linear regression, recovering the effective force law without assuming a parametric model. We expand the interaction kernels in a B-spline basis and compare candidate interaction topologies (which pairs of particles interact) via leave-one-out cross-validation.
+
+As independent validation, notebook 09 uses a [Neural Relational Inference](https://github.com/ethanfetaya/NRI) (NRI) approach: a variational graph encoder infers a latent interaction graph from trajectory windows, checking whether a neural model independently recovers the same topology.
 
 ## Structure
 
@@ -21,6 +25,7 @@ Infers effective distance-dependent forces between chromosomes (and from centros
   - `06_diffusion_landscape.py` — Spatially-varying diffusion D(x): multi-estimator comparison, per-cell consistency, coordinate axis comparison
   - `07_per_cell_heterogeneity.py` — Per-cell kernel variability vs pooled bootstrap uncertainty, correlation with cell features
   - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1)
+  - `09_neural_relational_inference.py` — NRI-lite latent topology inference: variational graph encoder infers which edges matter, independently validating SFI topology (requires `torch`)
 - `data/` — Raw `.mat` trajectory files (not tracked in git)
 - `docs/` — Design spec and planning documents
 
@@ -65,6 +70,7 @@ This project uses SFI-inspired projection inference with cross-validated interac
 - **ULI**: D. B. Bruckner, P. Ronceray & C. P. Broedersz, *Inferring the dynamics of underdamped stochastic systems*, Phys. Rev. Lett. 125, 058103 (2020).
 - **PASTIS**: A. Gerardos & P. Ronceray, *Parsimonious model selection for stochastic dynamics*, arXiv:2501.10339 (2025).
 - **SFI code**: https://github.com/ronceray/StochasticForceInference
+- **NRI**: T. Kipf, E. Fetaya, K.-C. Wang, M. Welling & R. Zemel, *Neural relational inference for interacting systems*, ICML 2018. Code: https://github.com/ethanfetaya/NRI
 
 ## Docs
 

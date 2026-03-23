@@ -31,11 +31,12 @@ This project uses SFI-inspired projection inference, not the full SFI/PASTIS pip
 - **Model selection**: We compare a small set of physically motivated interaction topologies via LOOCV and rollout CV, rather than sparse selection over a large operator library (PASTIS). This is appropriate because we have a few candidate topologies, not a combinatorial basis library.
 - **Variable diffusion**: D(x) is estimated in a second stage from residuals, not jointly inferred with the force. Notebook 06 includes a quantitative check showing the diffusion-gradient correction (grad(D), the "spurious force" in Ito convention) is small relative to the inferred force, justifying the decoupled approach.
 - **Stochastic calculus convention**: Default is Ito; sensitivity to Ito/Ito-shift/Stratonovich is checked in notebook 05.
+- **NRI validation**: Notebook 09 uses a Neural Relational Inference (NRI-lite) model as independent topology validation. The variational graph encoder infers latent edge types from trajectory windows; if it assigns high activity to pole->chromosome edges, that confirms the SFI topology selection without sharing any of the SFI assumptions.
 - **Paper framing**: "SFI-inspired projection inference with cross-validated interaction topologies."
 
 ## Code style
 
 - Python 3.10+, numpy/scipy/matplotlib
 - Dataclasses for configuration (`FitConfig`) and data containers (`CellData`)
-- No heavy ML frameworks in initial implementation
+- PyTorch used only in notebook 09 (NRI-lite); all other code is numpy/scipy
 - Jupyter notebooks for running analyses; modules for reusable logic
