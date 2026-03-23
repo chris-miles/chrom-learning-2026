@@ -127,8 +127,8 @@ def compute_end_sep(
 
     candidates = np.flatnonzero(running_avg >= threshold)
     if candidates.size == 0:
-        return max(0, len(smoothed) - 1)
-    return int(candidates[0])
+        return max(neb_frame, len(smoothed) - 1)
+    return max(neb_frame, int(candidates[0]))
 
 
 def _ao_min_index(cell: CellData) -> int:

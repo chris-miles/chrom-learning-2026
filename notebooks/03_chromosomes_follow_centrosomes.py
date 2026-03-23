@@ -1,5 +1,5 @@
 # %% [markdown]
-# # 02 — Centrosomes drive chromosome motion
+# # 03 -- Centrosomes drive chromosome motion
 #
 # Three independent lines of evidence that centrosome positions can be
 # treated as autonomous inputs when modeling chromosome dynamics:

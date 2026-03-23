@@ -1,5 +1,5 @@
 # %% [markdown]
-# # 01b — Chromosome velocity depends on position, not time
+# # 02 -- Chromosome velocity depends on position, not time
 #
 # Before fitting any spatial force model, we establish that chromosome
 # velocities are determined by *where* a chromosome is, not *when* it

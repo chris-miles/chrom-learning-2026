@@ -208,10 +208,13 @@ chrom_learning_2026/               # repository root
 │       └── trajectory_viz.py      # Single-cell trajectory visualization, spindle-frame plots
 ├── notebooks/                     # Primary interface (percent-cell .py format)
 │   ├── 01_explore_data.py         # Data loading, metadata, trajectory visualization
-│   ├── 01b_velocity_spatial_not_temporal.py  # Velocity depends on distance, not time
-│   ├── 02_chromosomes_follow_centrosomes.py  # Centrosome autonomy justification
-│   ├── 03_model_selection.py      # 4-topology comparison, CV, forward simulation
-│   └── 04_robustness.py           # Hyperparameter sensitivity sweeps
+│   ├── 02_velocity_spatial_not_temporal.py   # Velocity depends on distance, not time
+│   ├── 03_chromosomes_follow_centrosomes.py  # Centrosome autonomy justification
+│   ├── 04_model_selection.py      # 4-topology comparison, CV, forward simulation
+│   ├── 05_robustness.py           # Hyperparameter sensitivity sweeps
+│   ├── 06_diffusion_landscape.py  # Spatially-varying D(x), multi-estimator
+│   ├── 07_per_cell_heterogeneity.py  # Per-cell kernel variability
+│   └── 08_cross_condition.py      # Cross-condition kernel comparison
 ├── data/                          # .mat files (existing raw data, not a Python package)
 ├── old_code/                      # MATLAB reference (existing)
 └── docs/                          # Documentation (existing)
@@ -346,7 +349,7 @@ The `topology` field controls which interaction partners are used:
 
 **01_explore_data.ipynb**: Load a few rpe18_ctr cells, inspect array shapes, plot raw 3D trajectories, verify NEB/AO timing, sanity-check pole-pole distances and chromosome counts. Purpose: confirm data loading works correctly.
 
-**01b_velocity_spatial_not_temporal.py**: Establishes that chromosome velocity is determined by distance from the spindle center, not time. Replicates the old paper's binned velocity comparison (Fig 2A–B) with Cohen's d effect sizes and a chromosome-level permutation test. Justifies dropping time-dependence before fitting spatial force models.
+**02_velocity_spatial_not_temporal.py**: Establishes that chromosome velocity is determined by distance from the spindle center, not time. Replicates the old paper's binned velocity comparison (Fig 2A-B) with Cohen's d effect sizes and a chromosome-level permutation test. Justifies dropping time-dependence before fitting spatial force models.
 
 **02_lag_correlation.ipynb**: Run lag correlation analysis across all rpe18_ctr cells. Produce the supplementary figure showing chromosomes follow centrosomes. This justifies treating centrosomes as external in the model.
 

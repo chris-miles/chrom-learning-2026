@@ -14,10 +14,13 @@ Infers effective distance-dependent forces between chromosomes (and from centros
   - `analysis/` — Supporting analyses (lag correlation, trajectory visualization, velocity-vs-distance)
 - `notebooks/` — Jupyter-compatible `.py` notebooks (primary interface)
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
-  - `01b_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time (binned comparison, effect sizes, chromosome-level permutation test)
-  - `02_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
-  - `03_model_selection.py` — Compares 4 interaction topologies (poles, center, ±chromosomes) via cross-validation, kernel plots, physical plausibility, and forward simulation
-  - `04_robustness.py` — Hyperparameter sensitivity: basis size, regularization, estimator mode, endpoint method, diffusion estimation
+  - `02_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time (binned comparison, effect sizes, chromosome-level permutation test)
+  - `03_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
+  - `04_model_selection.py` — Compares 4 interaction topologies (poles, center, ±chromosomes) via cross-validation, kernel plots, physical plausibility, and forward simulation
+  - `05_robustness.py` — Hyperparameter sensitivity: basis size, regularization, estimator mode, endpoint method, diffusion estimation
+  - `06_diffusion_landscape.py` — Spatially-varying diffusion D(x): multi-estimator comparison, per-cell consistency, coordinate axis comparison
+  - `07_per_cell_heterogeneity.py` — Per-cell kernel variability vs pooled bootstrap uncertainty, correlation with cell features
+  - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1, Kid/Kif4A)
 - `data/` — Raw `.mat` trajectory files (not tracked in git)
 - `docs/` — Design spec and planning documents
 

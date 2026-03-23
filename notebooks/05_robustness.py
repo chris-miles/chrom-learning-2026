@@ -1,7 +1,7 @@
 # %% [markdown]
-# # 04 — Robustness & Hyperparameter Sensitivity
+# # 05 -- Robustness & Hyperparameter Sensitivity
 #
-# Sensitivity of the winning topology from Notebook 03 to: basis size,
+# Sensitivity of the winning topology from Notebook 04 to: basis size,
 # regularisation strengths, estimator mode, endpoint method, and diffusion
 # estimation mode.
 
@@ -35,7 +35,7 @@ plt.rcParams["figure.dpi"] = 110
 # ## Setup
 
 # %%
-# Update this after consulting Notebook 03 results.
+# Update this after consulting Notebook 04 results.
 WINNING_TOPOLOGY = "poles"
 
 CONDITION = "rpe18_ctr"

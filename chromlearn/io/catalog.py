@@ -7,8 +7,14 @@ from chromlearn.io.loader import CellData, has_valid_neb, load_cell
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 CONDITIONS = {
-    "rpe18_ctr": "rpe18_ctr",
-    "rod311_ctr": "rod311_ctr",
+    # Primary conditions for the paper
+    "rpe18_ctr": "rpe18_ctr",        # Control (RPE1 wild-type)
+    "rod311_ctr": "rod311_ctr",      # Rod-delta/delta (corona-deficient)
+    "rpe18_gsk": "rpe18_gsk",        # CENP-E inhibition (20 nM GSK923295)
+    "rod311_gsk": "rod311_gsk",      # Rod-delta/delta + CENP-E inhibition
+    "rpe18_prc": "rpe18_prc",        # PRC1 depletion (spindle geometry)
+    "rpe18_siKidKif4A": "rpe18_siKidKif4A",  # Kid/Kif4A depletion (arm motors)
+    # Other conditions
     "rod311_prc": "rod311_prc",
     "rod311_rev": "rod311_rev",
     "rpe18_rev": "rpe18_rev",
