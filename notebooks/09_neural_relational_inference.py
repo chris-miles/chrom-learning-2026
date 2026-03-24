@@ -805,7 +805,7 @@ sfi_config = FitConfig(
 sfi_cv = cross_validate(cells, sfi_config)
 
 print("=== CV error comparison ===")
-print(f"SFI (poles, B-spline): {sfi_cv.mean_error:.6f} +/- {sfi_cv.std_error:.6f}")
+print(f"SFI (poles, B-spline): {sfi_cv.mean_error:.6f} +/- {sfi_cv.fold_se:.6f} (SE)")
 print(f"NRI-lite:              {np.nanmean(test_mses):.6f} +/- {np.nanstd(test_mses):.6f}")
 
 

@@ -34,7 +34,18 @@ class CVResult:
 
     held_out_errors: np.ndarray
     mean_error: float
-    std_error: float
+    fold_sd: float
+
+    @property
+    def fold_se(self) -> float:
+        """Standard error of the mean (fold_sd / sqrt(n_valid_folds))."""
+        n = int(np.sum(np.isfinite(self.held_out_errors)))
+        return self.fold_sd / np.sqrt(n) if n > 0 else np.inf
+
+    @property
+    def std_error(self) -> float:
+        """Deprecated alias for fold_sd (kept for backward compatibility)."""
+        return self.fold_sd
 
 
 @dataclass
@@ -266,7 +277,7 @@ def cross_validate(
     return CVResult(
         held_out_errors=errors,
         mean_error=float(np.nanmean(errors)),
-        std_error=float(np.nanstd(errors)),
+        fold_sd=float(np.nanstd(errors)),
     )
 
 
@@ -484,3 +495,34 @@ def fit_model(
         diffusion_model=diffusion_model,
         topology=config.topology,
     )
+
+
+def paired_cv_differences(
+    cv_results: dict[str, CVResult],
+    reference: str,
+) -> dict[str, tuple[float, float]]:
+    """Paired fold-by-fold CV loss differences relative to a reference topology.
+
+    Because every topology is evaluated on the same held-out cells, the correct
+    uncertainty for comparing two topologies is the SE of the **paired**
+    foldwise difference.
+
+    Args:
+        cv_results: Mapping from topology name to CVResult.
+        reference: The topology to subtract (typically the best-scoring one).
+
+    Returns:
+        Dict mapping each topology to ``(mean_diff, se_diff)`` where
+        ``mean_diff = mean(errors_topo - errors_ref)`` across folds.
+    """
+    ref_errors = cv_results[reference].held_out_errors
+    out: dict[str, tuple[float, float]] = {}
+    for topo, cv in cv_results.items():
+        diff = cv.held_out_errors - ref_errors
+        valid = np.isfinite(diff)
+        n = int(valid.sum())
+        mean_diff = float(np.mean(diff[valid])) if n > 0 else np.inf
+        sd_diff = float(np.std(diff[valid], ddof=1)) if n > 1 else np.inf
+        se_diff = sd_diff / np.sqrt(n) if n > 0 else np.inf
+        out[topo] = (mean_diff, se_diff)
+    return out

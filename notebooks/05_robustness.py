@@ -84,14 +84,14 @@ for n in N_BASIS_VALUES:
     cv_basis[str(n)] = cross_validate(cells, cfg)
     print(
         f"  n_basis={n:3d}  CV = {cv_basis[str(n)].mean_error:.4e}"
-        f" ± {cv_basis[str(n)].std_error:.4e}"
+        f" ± {cv_basis[str(n)].fold_se:.4e}"
     )
 
 # %%
 fig_basis, ax_basis = plt.subplots(figsize=(7, 4))
 n_vals = [int(k) for k in cv_basis]
 means = [cv_basis[k].mean_error for k in cv_basis]
-stds = [cv_basis[k].std_error for k in cv_basis]
+stds = [cv_basis[k].fold_se for k in cv_basis]
 ax_basis.errorbar(n_vals, means, yerr=stds, fmt="o-", capsize=4, color="C0")
 ax_basis.set_xlabel("Number of basis functions per kernel")
 ax_basis.set_ylabel("Leave-one-out CV MSE")
@@ -160,7 +160,7 @@ fig_reg, axes_reg = plt.subplots(1, 2, figsize=(12, 4))
 
 ridge_lams = LAMBDA_GRID
 ridge_means = [cv_ridge[f"{l:.2e}"].mean_error for l in ridge_lams]
-ridge_stds = [cv_ridge[f"{l:.2e}"].std_error for l in ridge_lams]
+ridge_stds = [cv_ridge[f"{l:.2e}"].fold_se for l in ridge_lams]
 axes_reg[0].errorbar(ridge_lams, ridge_means, yerr=ridge_stds, fmt="o-", capsize=3, color="C1")
 axes_reg[0].set_xscale("log")
 axes_reg[0].set_xlabel("lambda_ridge")
@@ -169,7 +169,7 @@ axes_reg[0].set_title(f"Ridge penalty  (lambda_rough = {FIXED_ROUGH:.0e})")
 
 rough_lams = LAMBDA_GRID
 rough_means = [cv_rough[f"{l:.2e}"].mean_error for l in rough_lams]
-rough_stds = [cv_rough[f"{l:.2e}"].std_error for l in rough_lams]
+rough_stds = [cv_rough[f"{l:.2e}"].fold_se for l in rough_lams]
 axes_reg[1].errorbar(rough_lams, rough_means, yerr=rough_stds, fmt="o-", capsize=3, color="C2")
 axes_reg[1].set_xscale("log")
 axes_reg[1].set_xlabel("lambda_rough")
@@ -218,7 +218,7 @@ for mode in ESTIMATOR_MODES:
     models_mode[mode] = fit_model(cells, cfg)
     print(
         f"  mode={mode:12s}  CV = {cv_mode[mode].mean_error:.4e}"
-        f" ± {cv_mode[mode].std_error:.4e}"
+        f" ± {cv_mode[mode].fold_se:.4e}"
     )
 
 # %%
@@ -321,7 +321,7 @@ for frac in ENDPOINT_FRACS:
     print(
         f"  {label}  n_cells={len(trimmed_method)}"
         f"  CV = {cv_endpoint[label].mean_error:.4e}"
-        f" +/- {cv_endpoint[label].std_error:.4e}"
+        f" +/- {cv_endpoint[label].fold_se:.4e}"
     )
 
 # Also try end_sep
@@ -354,7 +354,7 @@ if len(trimmed_end_sep) >= 3:
     print(
         f"  end_sep  n_cells={len(trimmed_end_sep)}"
         f"  CV = {cv_endpoint['end_sep'].mean_error:.4e}"
-        f" +/- {cv_endpoint['end_sep'].std_error:.4e}"
+        f" +/- {cv_endpoint['end_sep'].fold_se:.4e}"
     )
 else:
     print(f"  end_sep: only {len(trimmed_end_sep)} cells — skipping CV (too few).")

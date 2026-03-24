@@ -10,7 +10,9 @@
 # | **poles\_and\_chroms** | both poles | yes |
 # | **center\_and\_chroms** | pole midpoint | yes |
 #
-# Selection criteria: leave-one-cell-out CV, rollout validation, bootstrap CIs.
+# Primary selection criterion: leave-one-cell-out one-step velocity MSE with
+# paired fold-difference uncertainty.
+# Secondary checks: rollout validation, bootstrap CIs, kernel physics checks.
 
 # %%
 import sys
@@ -39,6 +41,7 @@ from chromlearn.model_fitting.fit import (
     bootstrap_kernels,
     cross_validate,
     fit_model,
+    paired_cv_differences,
     rollout_cross_validate,
 )
 from chromlearn.model_fitting.model import FittedModel
@@ -56,18 +59,37 @@ for c in cells:
     print(f"  {c.cell_id}: {T} frames, {N} chromosomes")
 
 # %% [markdown]
-# ## Estimate basis domains from data
+# ## Basis domains
 #
-# Sweep all cells to get empirical distance distributions for xy (depends on
-# topology) and xx (topology-independent).  Lower limit anchored at 0.3 um
-# (below tracking resolution); upper limit from observed max distance.
+# Basis support is fixed a priori from imaging resolution and spindle geometry,
+# not estimated from the data.  This avoids leaking held-out cell information
+# into the basis used during cross-validation.
+#
+# - `r_min = 0.3 um`: below kinetochore tracking resolution.
+# - `r_max = 15.0 um`: conservative upper bound from RPE1 spindle geometry
+#   (pole-to-pole ~10-14 um; 15 um covers all plausible pairwise distances).
+#
+# We use a single domain for both xx and xy interactions across all topologies.
+# Empirical distance distributions are plotted below as a sanity check.
 
 # %%
 TOPOLOGIES = ["poles", "center", "poles_and_chroms", "center_and_chroms"]
 
-# --------------------------------------------------------------------------
-# Collect chromosome-to-partner distances per topology
-# --------------------------------------------------------------------------
+R_MIN = 0.3   # um — tracking resolution floor
+R_MAX = 15.0  # um — conservative spindle-scale upper bound
+
+r_min_xx = R_MIN
+r_max_xx = R_MAX
+r_min_xy = R_MIN
+r_max_xy = R_MAX
+
+# For backward compat with code that indexes xy_domains[topology]
+xy_domains: dict[str, tuple[float, float]] = {t: (R_MIN, R_MAX) for t in TOPOLOGIES}
+
+print(f"Fixed basis domains: r_min={R_MIN}, r_max={R_MAX} um (all interactions, all topologies)")
+
+# %%
+# Empirical distance distributions (sanity check that fixed domains cover the data)
 xy_dists_by_topology: dict[str, list[float]] = {t: [] for t in TOPOLOGIES}
 xx_dists_all: list[float] = []
 
@@ -75,7 +97,6 @@ for cell in cells:
     T, _, N = cell.chromosomes.shape
     chroms = cell.chromosomes  # (T, 3, N)
 
-    # xx distances: pairwise chromosome-chromosome, all frames
     for t in range(T):
         pos_t = chroms[t].T  # (N, 3)
         for i in range(N):
@@ -88,7 +109,6 @@ for cell in cells:
                 if d > 1e-12:
                     xx_dists_all.append(d)
 
-    # xy distances per topology
     for topology in TOPOLOGIES:
         partners = get_partners(cell, topology)  # (n_p, T, 3)
         for t in range(T):
@@ -103,45 +123,19 @@ for cell in cells:
                         xy_dists_by_topology[topology].append(d)
 
 xx_dists_all = np.array(xx_dists_all)
-print(f"Collected {len(xx_dists_all):,} chromosome-chromosome distance samples")
+print(f"Collected {len(xx_dists_all):,} xx distance samples  "
+      f"(observed range: {np.min(xx_dists_all):.2f} – {np.max(xx_dists_all):.2f} um)")
 for t in TOPOLOGIES:
-    print(f"  xy ({t}): {len(xy_dists_by_topology[t]):,} samples")
-
+    arr = np.array(xy_dists_by_topology[t])
+    print(f"  xy ({t}): {len(arr):,} samples  "
+          f"(observed range: {np.min(arr):.2f} – {np.max(arr):.2f} um)")
 
 # %%
-def _domain_from_dists(
-    dists: np.ndarray,
-    r_min_floor: float = 0.3,
-    r_max_ceil: float = 20.0,
-) -> tuple[float, float]:
-    """Return (r_min, r_max) domain from distance distribution."""
-    r_min = float(r_min_floor)
-    r_max = float(np.clip(np.max(dists), r_min_floor, r_max_ceil))
-    if r_max <= r_min:
-        r_max = r_min + 1.0
-    return r_min, r_max
-
-
-# Shared xx domain (topology-independent)
-r_min_xx, r_max_xx = _domain_from_dists(xx_dists_all)
-
-# Per-topology xy domains
-xy_domains: dict[str, tuple[float, float]] = {}
-for topology in TOPOLOGIES:
-    xy_domains[topology] = _domain_from_dists(np.array(xy_dists_by_topology[topology]))
-
-print(f"\nxx domain (all topologies): r_min={r_min_xx:.2f}, r_max={r_max_xx:.2f} um")
-for t in TOPOLOGIES:
-    rlo, rhi = xy_domains[t]
-    print(f"  xy ({t}): r_min={rlo:.2f}, r_max={rhi:.2f} um")
-
-# %%
-# Plot distance distributions with chosen domains
 fig, axes = plt.subplots(1, 5, figsize=(18, 4))
 
 axes[0].hist(xx_dists_all, bins=60, color="C2", edgecolor="k", alpha=0.7)
-axes[0].axvline(r_min_xx, color="r", linestyle="--", linewidth=1.5, label=f"r_min={r_min_xx:.2f}")
-axes[0].axvline(r_max_xx, color="r", linestyle="-", linewidth=1.5, label=f"r_max={r_max_xx:.2f}")
+axes[0].axvline(R_MIN, color="r", linestyle="--", linewidth=1.5, label=f"r_min={R_MIN}")
+axes[0].axvline(R_MAX, color="r", linestyle="-", linewidth=1.5, label=f"r_max={R_MAX}")
 axes[0].set_title("Chromosome-chromosome (xx)")
 axes[0].set_xlabel("Distance (um)")
 axes[0].set_ylabel("Count")
@@ -149,15 +143,14 @@ axes[0].legend(fontsize=7)
 
 for idx, topology in enumerate(TOPOLOGIES):
     ax = axes[idx + 1]
-    rlo, rhi = xy_domains[topology]
     ax.hist(xy_dists_by_topology[topology], bins=60, color=f"C{idx}", edgecolor="k", alpha=0.7)
-    ax.axvline(rlo, color="r", linestyle="--", linewidth=1.5, label=f"r_min={rlo:.2f}")
-    ax.axvline(rhi, color="r", linestyle="-", linewidth=1.5, label=f"r_max={rhi:.2f}")
+    ax.axvline(R_MIN, color="r", linestyle="--", linewidth=1.5, label=f"r_min={R_MIN}")
+    ax.axvline(R_MAX, color="r", linestyle="-", linewidth=1.5, label=f"r_max={R_MAX}")
     ax.set_title(f"xy ({topology})")
     ax.set_xlabel("Distance (um)")
     ax.legend(fontsize=7)
 
-fig.suptitle("Observed distance distributions — basis domains marked in red")
+fig.suptitle("Observed distance distributions — fixed basis domains marked in red")
 fig.tight_layout()
 plt.show()
 
@@ -169,7 +162,7 @@ plt.show()
 # - `lambda_ridge = lambda_rough = 1e-3`
 # - `basis_eval_mode = "ito"` (current positions, standard SFI)
 #
-# Domain parameters are set from the empirical distributions above.
+# Domain parameters are fixed a priori (see basis-domain section above).
 
 # %%
 N_BASIS = 10
@@ -177,15 +170,14 @@ LAMBDA = 1e-3
 
 configs: dict[str, FitConfig] = {}
 for topology in TOPOLOGIES:
-    rlo_xy, rhi_xy = xy_domains[topology]
     configs[topology] = FitConfig(
         topology=topology,
         n_basis_xx=N_BASIS,
         n_basis_xy=N_BASIS,
-        r_min_xx=r_min_xx,
-        r_max_xx=r_max_xx,
-        r_min_xy=rlo_xy,
-        r_max_xy=rhi_xy,
+        r_min_xx=R_MIN,
+        r_max_xx=R_MAX,
+        r_min_xy=R_MIN,
+        r_max_xy=R_MAX,
         basis_type="bspline",
         lambda_ridge=LAMBDA,
         lambda_rough=LAMBDA,
@@ -206,6 +198,11 @@ for topology in TOPOLOGIES:
 #
 # Leave-one-cell-out CV: fit on 12 cells, evaluate mean squared error on the
 # held-out cell.  Lower is better.
+#
+# **Primary model-selection criterion**: leave-one-cell-out one-step velocity
+# MSE, averaged equally across held-out cells.  Paired fold-by-fold loss
+# differences and their SEs are reported to assess whether score gaps between
+# topologies are meaningful.
 
 # %%
 print("Running leave-one-cell-out cross-validation (4 topologies × 13 folds)...")
@@ -213,7 +210,7 @@ cv_results: dict[str, CVResult] = {}
 for topology in TOPOLOGIES:
     cv_results[topology] = cross_validate(cells, configs[topology])
     r = cv_results[topology]
-    print(f"  {topology:<22}  MSE={r.mean_error:.8f} ± {r.std_error:.8f}")
+    print(f"  {topology:<22}  MSE={r.mean_error:.8f}  (fold SD={r.fold_sd:.8f}, SE={r.fold_se:.8f})")
 
 # %%
 fig = plot_cv_curve(cv_results)
@@ -241,13 +238,13 @@ plt.show()
 
 # Summary printout
 print("\nCV summary (sorted by mean MSE):")
-sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
-best_cv = cv_results[sorted_topo[0]].mean_error
-for rank, topology in enumerate(sorted_topo):
+sorted_topo_cv = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
+best_cv = cv_results[sorted_topo_cv[0]].mean_error
+for rank, topology in enumerate(sorted_topo_cv):
     r = cv_results[topology]
     delta = r.mean_error - best_cv
     print(f"  #{rank + 1}  {topology:<22}  MSE={r.mean_error:.8f}  "
-          f"(Δbest={delta:+.2e})")
+          f"(Δbest={delta:+.2e}, SE={r.fold_se:.2e})")
 
 
 # %% [markdown]
@@ -339,7 +336,7 @@ plt.show()
 
 # Also plot f_xy for chroms topologies alongside poles/center for comparison
 fig, axes = plt.subplots(1, len(TOPOLOGIES), figsize=(6 * len(TOPOLOGIES), 4.5), squeeze=False)
-r_xy_probe = {t: np.linspace(*xy_domains[t], 400) for t in TOPOLOGIES}
+r_xy_probe = {t: np.linspace(R_MIN, R_MAX, 400) for t in TOPOLOGIES}
 
 for col, topology in enumerate(TOPOLOGIES):
     ax = axes[0, col]
@@ -654,47 +651,88 @@ fig.suptitle("Aggregate rollout validation across held-out cells")
 fig.tight_layout()
 plt.show()
 
-sorted_topo_endpoint = sorted(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
+# %%
+# Detailed LOOCV rollout table: per-metric means ± SE across held-out cells
+print("\nLOOCV rollout validation — detailed summary (mean ± SE across held-out cells)")
+print("=" * 120)
+print(f"{'Topology':<22} {'Axial MSE':>14} {'Radial MSE':>14} {'Endpoint':>14} "
+      f"{'W1 axial':>14} {'W1 radial':>14}")
+print("-" * 120)
+
+n_cv_cells = len(cells)
+for topology in TOPOLOGIES:
+    rr = rollout_results[topology]
+    def _fmt(arr):
+        m = np.nanmean(arr)
+        se = np.nanstd(arr) / np.sqrt(np.sum(np.isfinite(arr)))
+        return f"{m:.4f} ± {se:.4f}"
+    print(f"  {topology:<22} {_fmt(rr.axial_mse):>14} {_fmt(rr.radial_mse):>14} "
+          f"{_fmt(rr.endpoint_mean_error):>14} "
+          f"{_fmt(rr.final_axial_wasserstein):>14} {_fmt(rr.final_radial_wasserstein):>14}")
+
+print("=" * 120)
+
+# Horizon-resolved table
+print("\nHeld-out forecast error by horizon (mean ± SE, axial+radial combined)")
+horizons = rollout_results[TOPOLOGIES[0]].horizons
+header = f"{'Topology':<22}" + "".join(f"  h={h:<5}" for h in horizons)
+print(header)
+for topology in TOPOLOGIES:
+    rr = rollout_results[topology]
+    vals = []
+    for hi in range(len(horizons)):
+        col = rr.horizon_errors[:, hi]
+        m = np.nanmean(col)
+        se = np.nanstd(col) / np.sqrt(np.sum(np.isfinite(col)))
+        vals.append(f"{m:.4f}±{se:.4f}")
+    print(f"  {topology:<22}" + "".join(f"  {v:<7}" for v in vals))
+
+
+# %% [markdown]
+# ## Model selection summary
+#
+# **Primary criterion**: leave-one-cell-out one-step velocity MSE, with paired
+# fold-difference SEs to assess whether score gaps are meaningful.
+#
+# **Secondary criterion**: LOOCV rollout validation (pathwise MSE, endpoint
+# error, final-frame distributional metrics).  This is the strongest test of
+# whether the learned dynamics reproduce real trajectories, but carries more
+# Monte Carlo noise than 1-step prediction.
+#
+# **Qualitative checks**: full-data forward simulations and kernel-shape /
+# physics plausibility (above).
 
 # %%
-print("=" * 112)
-print(f"{'Topology':<22} {'CV MSE':>12} {'Δbest':>10} {'Rollout':>10} {'Endpoint':>10} {'Final W1':>10} {'Rank':>5} {'D_x':>12} {'n_params':>9}")
-print("-" * 112)
-
 sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
-best_cv = cv_results[sorted_topo[0]].mean_error
-sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_time_score[t])
-for rank, topology in enumerate(sorted_topo):
+best_mean_topo = sorted_topo[0]
+paired = paired_cv_differences(cv_results, reference=best_mean_topo)
+
+print("Primary criterion: leave-one-cell-out 1-step velocity MSE")
+print("=" * 105)
+print(f"{'Topology':<22} {'CV MSE':>12} {'SE':>10} {'Δ vs best':>10} {'SE(Δ)':>10} {'Δ/SE(Δ)':>8} "
+      f"{'D_x':>12} {'n_params':>9}")
+print("-" * 105)
+
+for topology in sorted_topo:
     r = cv_results[topology]
     m = models[topology]
-    delta = r.mean_error - best_cv
-    print(f"  {topology:<22} {r.mean_error:>12.8f} {delta:>+10.2e} "
-          f"{rollout_time_score[topology]:>10.4f} {rollout_endpoint_score[topology]:>10.4f} "
-          f"{rollout_dist_score[topology]:>10.4f} {rank + 1:>5} {m.D_x:>12.8f} {m.theta.size:>9}")
+    mean_diff, se_diff = paired[topology]
+    ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
+    print(f"  {topology:<22} {r.mean_error:>12.8f} {r.fold_se:>10.2e} "
+          f"{mean_diff:>+10.2e} {se_diff:>10.2e} {ratio:>8.2f} "
+          f"{m.D_x:>12.8f} {m.theta.size:>9}")
 
-print("=" * 112)
+print("=" * 105)
+print(f"  Best mean: {best_mean_topo}")
+print(f"  Note: Δ/SE(Δ) < 1 means the gap is within one paired SE of zero.")
 
-best_topology = sorted_topo[0]
-best_topology_rollout = sorted_topo_rollout[0]
-best_topology_endpoint = sorted_topo_endpoint[0]
-print(f"\n1-step CV winner: {best_topology}")
-print(f"  CV MSE          = {cv_results[best_topology].mean_error:.8f}")
-print(f"  Rollout score   = {rollout_time_score[best_topology]:.5f}")
-print(f"  Endpoint score  = {rollout_endpoint_score[best_topology]:.5f}")
-print(f"  Final W1 score  = {rollout_dist_score[best_topology]:.5f}")
-print(f"  D_x             = {models[best_topology].D_x:.8f} um^2/s")
+print("\nSecondary criterion: LOOCV rollout validation (means across held-out cells)")
+print(f"  {'Topology':<22} {'Axial+Rad MSE':>14} {'Endpoint':>10} {'W1 total':>10}")
+for t in sorted(TOPOLOGIES, key=lambda t: rollout_time_score[t]):
+    print(f"  {t:<22} {rollout_time_score[t]:>14.4f} "
+          f"{rollout_endpoint_score[t]:>10.4f} {rollout_dist_score[t]:>10.4f}")
 
-print(f"\nRollout winner: {best_topology_rollout}")
-print(f"  Rollout score   = {rollout_time_score[best_topology_rollout]:.5f}")
-print(f"  Endpoint score  = {rollout_endpoint_score[best_topology_rollout]:.5f}")
-print(f"  Final W1 score  = {rollout_dist_score[best_topology_rollout]:.5f}")
-print(f"  CV MSE          = {cv_results[best_topology_rollout].mean_error:.8f}")
-
-print(f"\nEndpoint winner: {best_topology_endpoint}")
-print(f"  Endpoint score  = {rollout_endpoint_score[best_topology_endpoint]:.5f}")
-print(f"  Rollout score   = {rollout_time_score[best_topology_endpoint]:.5f}")
-print(f"  Final W1 score  = {rollout_dist_score[best_topology_endpoint]:.5f}")
-print(f"  CV MSE          = {cv_results[best_topology_endpoint].mean_error:.8f}")
+best_topology = best_mean_topo
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")

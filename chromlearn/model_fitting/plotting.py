@@ -64,8 +64,8 @@ def plot_cv_curve(cv_results: dict[str, CVResult]) -> plt.Figure:
     labels = list(cv_results)
     x = np.arange(len(labels))
     means = [cv_results[label].mean_error for label in labels]
-    stds = [cv_results[label].std_error for label in labels]
-    axis.errorbar(x, means, yerr=stds, fmt="o-", capsize=4)
+    ses = [cv_results[label].fold_se for label in labels]
+    axis.errorbar(x, means, yerr=ses, fmt="o-", capsize=4)
     axis.set_xticks(x)
     axis.set_xticklabels(labels, rotation=45, ha="right")
     axis.set_ylabel("Mean squared error")
