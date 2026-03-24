@@ -29,11 +29,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-ROOT = (
-    Path(__file__).resolve().parent.parent
-    if "__file__" in dir()
-    else Path("..").resolve()
-)
+from chromlearn import find_repo_root
+
+ROOT = find_repo_root(Path(__file__).resolve().parent if "__file__" in dir() else Path.cwd())
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -301,21 +299,21 @@ plt.show()
 # %%
 N_EDGE_TYPES = 2
 TYPE_EMBED_DIM = 8
-ENC_HIDDEN = 128
-DEC_HIDDEN = 128
-MSG_HIDDEN = 128
-MSG_DIM = 128
+ENC_HIDDEN = 64
+DEC_HIDDEN = 64
+MSG_HIDDEN = 64
+MSG_DIM = 64
 
 LR = 1e-3
 WEIGHT_DECAY = 1e-5
 BATCH_SIZE = 32
-N_EPOCHS = 120
+N_EPOCHS = 40
 KL_WEIGHT = 1e-2
-KL_WARMUP_EPOCHS = 40
+KL_WARMUP_EPOCHS = 15
 NULL_EDGE_PRIOR = 0.9
 TEMP_START = 1.0
 TEMP_END = 0.5
-PRINT_EVERY = 20
+PRINT_EVERY = 10
 
 
 def directed_edge_index(num_nodes):
@@ -423,9 +421,12 @@ class TypedNRILite(nn.Module):
         )
         return logits, edge_mask
 
-    def sample_edges(self, logits, edge_mask, temperature):
+    def sample_edges(self, logits, edge_mask, temperature, sample=True):
         probs = logits.softmax(dim=-1)
-        edges = F.gumbel_softmax(logits, tau=temperature, hard=False, dim=-1)
+        if sample:
+            edges = F.gumbel_softmax(logits, tau=temperature, hard=False, dim=-1)
+        else:
+            edges = probs
 
         null_edges = torch.zeros_like(edges)
         null_edges[..., 0] = 1.0
@@ -477,9 +478,9 @@ class TypedNRILite(nn.Module):
         pred_vel = cur_vel + delta_vel
         return pred_vel
 
-    def forward(self, pos_hist, node_mask, temperature):
+    def forward(self, pos_hist, node_mask, temperature, sample=True):
         logits, edge_mask = self.encode(pos_hist, node_mask)
-        edges, probs = self.sample_edges(logits, edge_mask, temperature)
+        edges, probs = self.sample_edges(logits, edge_mask, temperature, sample=sample)
         pred_vel = self.decode(pos_hist, node_mask, edges)
         return pred_vel, logits, probs, edge_mask
 
@@ -517,6 +518,16 @@ def categorical_kl(probs, edge_mask, null_prior=NULL_EDGE_PRIOR):
     return kl.sum(dim=-1).mean()
 
 
+def tensorize_windows(data, device=DEVICE):
+    return {
+        "pos_hist": torch.as_tensor(data["pos_hist"], dtype=torch.float32, device=device),
+        "node_mask": torch.as_tensor(data["node_mask"], dtype=torch.bool, device=device),
+        "target_vel": torch.as_tensor(data["target_vel"], dtype=torch.float32, device=device),
+        "target_mask": torch.as_tensor(data["target_mask"], dtype=torch.bool, device=device),
+        "cell_idx": torch.as_tensor(data["cell_idx"], dtype=torch.long, device=device),
+    }
+
+
 def iterate_minibatches(data, batch_size, rng=None, shuffle=False):
     n = data["pos_hist"].shape[0]
     if n == 0:
@@ -530,11 +541,12 @@ def iterate_minibatches(data, batch_size, rng=None, shuffle=False):
 
     for start in range(0, n, batch_size):
         batch_idx = indices[start : start + batch_size]
+        batch_idx = torch.as_tensor(batch_idx, dtype=torch.long, device=data["pos_hist"].device)
         yield {
-            "pos_hist": torch.tensor(data["pos_hist"][batch_idx], dtype=torch.float32, device=DEVICE),
-            "node_mask": torch.tensor(data["node_mask"][batch_idx], dtype=torch.bool, device=DEVICE),
-            "target_vel": torch.tensor(data["target_vel"][batch_idx], dtype=torch.float32, device=DEVICE),
-            "target_mask": torch.tensor(data["target_mask"][batch_idx], dtype=torch.bool, device=DEVICE),
+            "pos_hist": data["pos_hist"].index_select(0, batch_idx),
+            "node_mask": data["node_mask"].index_select(0, batch_idx),
+            "target_vel": data["target_vel"].index_select(0, batch_idx),
+            "target_mask": data["target_mask"].index_select(0, batch_idx),
         }
 
 
@@ -618,8 +630,8 @@ def train_fold(train_windows, test_windows, fold_seed, verbose=True):
         weight_decay=WEIGHT_DECAY,
     )
 
-    train_data = pack_windows(train_windows)
-    test_data = pack_windows(test_windows)
+    train_data = tensorize_windows(pack_windows(train_windows))
+    test_data = tensorize_windows(pack_windows(test_windows))
 
     temp_decay = (TEMP_END / TEMP_START) ** (1.0 / max(1, N_EPOCHS - 1))
 
@@ -642,7 +654,7 @@ def train_fold(train_windows, test_windows, fold_seed, verbose=True):
             kl = categorical_kl(probs, edge_mask)
             loss = recon + beta * kl
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
@@ -671,6 +683,7 @@ def train_fold(train_windows, test_windows, fold_seed, verbose=True):
                 batch["pos_hist"],
                 batch["node_mask"],
                 temperature=TEMP_END,
+                sample=False,
             )
 
             mask = batch["target_mask"].unsqueeze(-1).float()

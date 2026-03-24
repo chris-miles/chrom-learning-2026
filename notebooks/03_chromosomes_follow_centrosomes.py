@@ -24,9 +24,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
 
-ROOT = Path(__file__).resolve().parent.parent if "__file__" in dir() else Path("..").resolve()
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from chromlearn import find_repo_root
+
+ROOT = find_repo_root(Path(__file__).resolve().parent if "__file__" in dir() else Path.cwd())
 
 from chromlearn.analysis.lag_correlation import compute_lag_correlation, plot_lag_correlation
 from chromlearn.io.catalog import load_condition

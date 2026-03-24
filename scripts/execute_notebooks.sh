@@ -5,28 +5,30 @@
 #   e.g.: bash scripts/execute_notebooks.sh 04
 
 set -e
-cd "$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/notebooks"
+
+# Ensure chromlearn is importable regardless of kernel cwd
+export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
 if [ -n "$1" ]; then
-    # Run a single notebook by number
-    pattern="notebooks/0${1}*.py notebooks/${1}*.py"
-    files=$(ls $pattern 2>/dev/null | head -1)
+    files=$(ls 0${1}*.py ${1}*.py 2>/dev/null | head -1)
     if [ -z "$files" ]; then
         echo "No notebook matching '$1' found."
         exit 1
     fi
 else
-    files=$(ls notebooks/*.py)
+    files=$(ls *.py)
 fi
 
-mkdir -p notebooks/ipynb
+mkdir -p ipynb
 
 for pyfile in $files; do
     basename=$(basename "$pyfile" .py)
-    ipynb="notebooks/ipynb/${basename}.ipynb"
-    echo "Executing $pyfile -> $ipynb ..."
+    ipynb="ipynb/${basename}.ipynb"
+    echo "Executing $basename ..."
     python -m jupytext --to notebook --execute "$pyfile" -o "$ipynb"
-    echo "  Done."
+    echo "  Done: $ipynb"
 done
 
 echo ""

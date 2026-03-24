@@ -5,15 +5,14 @@
 # and verify that training windows are reasonable across all cells and conditions.
 
 # %%
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-ROOT = Path("..").resolve()
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from chromlearn import find_repo_root
+
+ROOT = find_repo_root(Path(__file__).resolve().parent if "__file__" in dir() else Path.cwd())
 
 from chromlearn.analysis.trajectory_viz import plot_cell_trajectories, plot_chromosome_cloud
 from chromlearn.io.catalog import CONDITIONS, list_cells, load_condition

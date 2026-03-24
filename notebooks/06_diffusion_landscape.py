@@ -21,11 +21,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-ROOT = (
-    Path(__file__).resolve().parent.parent
-    if "__file__" in dir()
-    else Path("..").resolve()
-)
+from chromlearn import find_repo_root
+
+ROOT = find_repo_root(Path(__file__).resolve().parent if "__file__" in dir() else Path.cwd())
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
