@@ -4,3 +4,4 @@ matplotlib>=3.7
 jupyter
 h5py
 pytest
+jupytext

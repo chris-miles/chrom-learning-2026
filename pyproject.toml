@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "jupyter"]
+dev = ["pytest", "jupyter", "jupytext"]
 
 [tool.pytest.ini_options]
 addopts = "-p no:zarr"
