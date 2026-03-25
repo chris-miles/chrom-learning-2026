@@ -58,14 +58,14 @@ All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init
 - **Basis evaluation mode** (`basis_eval_mode`): `"ito"` (default), `"ito_shift"` (decorrelates localization noise), `"strato"` (midpoint, reduces finite-dt bias)
 - **Diffusion estimator** (`diffusion_mode`): `"msd"` (default), `"vestergaard"` (noise-robust), `"weak_noise"` (drift-robust), `"f_corrected"` (subtracts inferred force)
 - **Variable D** (`D_variable`): fit D as a function of position along the spindle axis, radial distance, or distance from spindle center
-- **Endpoint method** (`endpoint_method`): `"neb_ao_frac"` (default, `endpoint_frac=0.5`) or `"end_sep"`
+- **Endpoint method** (`endpoint_method`): `"neb_ao_frac"` (default, `endpoint_frac=1/3`) or `"end_sep"`
 - **Basis type** (`basis_type`): `"bspline"` (default) or `"hat"`
 
 ## Methodology
 
 This project uses SFI-inspired projection inference with cross-validated interaction topologies. We fit pairwise radial kernels via penalized regression (as in SFI's projection framework) but differ from the full SFI/PASTIS pipeline in two ways: (1) model selection compares a small set of physically motivated topologies rather than sparse selection over a large basis library, and (2) spatially varying diffusion D(x) is estimated in a second stage from residuals rather than jointly inferred. Notebook 06 validates that the diffusion-gradient correction is negligible for our data.
 
-Model topology is selected using leave-one-cell-out cross-validated one-step velocity MSE as the primary criterion. Paired foldwise loss differences are reported to assess whether score gaps between topologies are meaningful. Rollout validation, kernel plausibility checks, and NRI analysis serve as supporting evidence. Basis domains are fixed a priori from imaging resolution and spindle geometry.
+Model topology is selected using leave-one-cell-out rollout path MSE (per-chromosome 3D position error on held-out cells) as the primary criterion. One-step velocity MSE serves as a secondary short-horizon diagnostic; endpoint mismatch, final-frame Wasserstein, and horizon-specific errors are reported as separate supporting diagnostics. Kernel plausibility checks and NRI analysis provide additional evidence. Basis domains are fixed a priori from imaging resolution and spindle geometry.
 
 ### References
 

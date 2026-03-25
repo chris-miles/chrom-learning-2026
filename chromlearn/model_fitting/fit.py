@@ -53,11 +53,17 @@ class RolloutCVResult:
     """Leave-one-cell-out rollout validation summary.
 
     Per-cell arrays have shape ``(n_cells,)``; ``horizon_errors`` has shape
-    ``(n_cells, n_horizons)``.  Callers can derive means via
-    ``np.nanmean(result.axial_mse)`` etc.
+    ``(n_cells, n_horizons)``.
+
+    ``path_mse`` is the expected per-chromosome 3D squared error of a single
+    rollout: MSE is computed for each replicate independently, then averaged
+    across replicates.  This includes both the model's drift bias and its
+    stochastic variance, i.e. it answers "if I run this simulator once, how
+    close is the output to reality?"
     """
 
     horizons: np.ndarray
+    path_mse: np.ndarray
     axial_mse: np.ndarray
     radial_mse: np.ndarray
     endpoint_mean_error: np.ndarray
@@ -315,6 +321,7 @@ def rollout_cross_validate(
         raise ValueError("horizons must contain at least one positive integer.")
 
     n_cells = len(cells)
+    path_mse = np.full(n_cells, np.nan, dtype=np.float64)
     axial_mse = np.full(n_cells, np.nan, dtype=np.float64)
     radial_mse = np.full(n_cells, np.nan, dtype=np.float64)
     endpoint_mean_error = np.full(n_cells, np.nan, dtype=np.float64)
@@ -333,15 +340,31 @@ def rollout_cross_validate(
         real_axial_mean = np.nanmean(real_sf.axial, axis=1)
         real_radial_mean = np.nanmean(real_sf.radial, axis=1)
 
-        # Simulate n_reps rollouts and average their spindle-frame summaries
+        # Simulate n_reps rollouts; keep both raw 3D positions and spindle-frame
+        sim_chroms = []
         sim_rollouts = []
         for _ in range(n_reps):
             rep_rng = np.random.default_rng(
                 int(rng.integers(0, np.iinfo(np.int64).max))
             )
             _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
+            sim_chroms.append(sim_cell.chromosomes)
             sim_rollouts.append(spindle_frame(sim_cell))
 
+        # Primary metric: per-chromosome 3D MSE, computed per replicate then
+        # averaged.  Each rep's MSE includes both drift bias and stochastic
+        # variance, so the mean is the expected single-rollout error.
+        real_chroms = test_cell.chromosomes  # (T, 3, N)
+        rep_mses = []
+        for sim_chrom in sim_chroms:
+            diff_3d = real_chroms - sim_chrom  # (T, 3, N)
+            any_nan = np.any(np.isnan(diff_3d), axis=1)  # (T, N)
+            sq_err = np.sum(diff_3d ** 2, axis=1)  # (T, N)
+            sq_err[any_nan] = np.nan
+            rep_mses.append(float(np.nanmean(sq_err)))
+        path_mse[held_out_index] = float(np.mean(rep_mses))
+
+        # Spindle-frame diagnostics
         sim_axial_mean = np.nanmean(
             np.stack([np.nanmean(sf.axial, axis=1) for sf in sim_rollouts], axis=0),
             axis=0,
@@ -394,6 +417,7 @@ def rollout_cross_validate(
 
     return RolloutCVResult(
         horizons=horizon_values,
+        path_mse=path_mse,
         axial_mse=axial_mse,
         radial_mse=radial_mse,
         endpoint_mean_error=endpoint_mean_error,

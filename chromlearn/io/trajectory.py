@@ -139,7 +139,7 @@ def _ao_mean_index(cell: CellData) -> int:
     return int(round((cell.ao1 + cell.ao2) / 2.0)) - 1
 
 
-def _compute_endpoint(cell: CellData, method: str, frac: float = 0.5) -> int:
+def _compute_endpoint(cell: CellData, method: str, frac: float = 1.0 / 3.0) -> int:
     neb_index = cell.neb - 1
     if method == "neb_ao_frac":
         ao_index = _ao_mean_index(cell)
@@ -155,8 +155,8 @@ def _compute_endpoint(cell: CellData, method: str, frac: float = 0.5) -> int:
 def trim_trajectory(
     cell: CellData,
     method: str = "neb_ao_frac",
-    frac: float = 0.5,
-    min_frames: int = 100,
+    frac: float = 1.0 / 3.0,
+    min_frames: int = 25,
 ) -> TrimmedCell:
     """Trim cell trajectories to the window ``[NEB, endpoint]``.
 

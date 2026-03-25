@@ -811,7 +811,7 @@ sfi_config = FitConfig(
     r_max_xy=15.0,
     basis_type="bspline",
     lambda_ridge=1e-3,
-    lambda_rough=1e-3,
+    lambda_rough=1.0,
     basis_eval_mode="ito",
     dt=DT,
 )

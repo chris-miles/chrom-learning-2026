@@ -10,9 +10,12 @@
 # | **poles\_and\_chroms** | both poles | yes |
 # | **center\_and\_chroms** | pole midpoint | yes |
 #
-# Primary selection criterion: leave-one-cell-out one-step velocity MSE with
-# paired fold-difference uncertainty.
-# Secondary checks: rollout validation, bootstrap CIs, kernel physics checks.
+# Primary selection criterion: leave-one-cell-out rollout path MSE
+# (per-chromosome 3D position error on held-out cells).
+# Secondary quantitative checks: one-step velocity MSE, endpoint mismatch,
+# final-frame distribution mismatch, and horizon-specific rollout errors.
+# Secondary qualitative checks: bootstrap CIs, kernel physics checks, and
+# representative forward simulations.
 
 # %%
 import sys
@@ -34,6 +37,7 @@ from chromlearn.io.trajectory import (
 )
 from chromlearn.model_fitting import FitConfig
 from chromlearn.model_fitting.basis import BSplineBasis
+from chromlearn.model_fitting.features import build_design_matrix
 from chromlearn.model_fitting.fit import (
     BootstrapResult,
     CVResult,
@@ -51,9 +55,11 @@ from chromlearn.model_fitting.simulate import simulate_cell, simulate_trajectori
 plt.rcParams["figure.dpi"] = 110
 
 # %%
+BASE_FRAC = 1.0 / 3.0
+
 cells_raw = load_condition("rpe18_ctr")
-cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
-print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to neb_ao_frac=0.5 window)")
+cells = [trim_trajectory(c, method="neb_ao_frac", frac=BASE_FRAC) for c in cells_raw]
+print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to neb_ao_frac={BASE_FRAC:.3f} window)")
 for c in cells:
     T, _, N = c.chromosomes.shape
     print(f"  {c.cell_id}: {T} frames, {N} chromosomes")
@@ -159,14 +165,16 @@ plt.show()
 #
 # We use:
 # - `n_basis = 10` B-spline basis functions for both xx and xy kernels
-# - `lambda_ridge = lambda_rough = 1e-3`
+# - `lambda_ridge = 1e-3`, `lambda_rough = 1.0`
 # - `basis_eval_mode = "ito"` (current positions, standard SFI)
+# - `endpoint_frac = 1/3` of the NEB-to-AO window
 #
 # Domain parameters are fixed a priori (see basis-domain section above).
 
 # %%
 N_BASIS = 10
-LAMBDA = 1e-3
+LAMBDA_RIDGE = 1e-3
+LAMBDA_ROUGH = 1.0
 
 configs: dict[str, FitConfig] = {}
 for topology in TOPOLOGIES:
@@ -179,9 +187,11 @@ for topology in TOPOLOGIES:
         r_min_xy=R_MIN,
         r_max_xy=R_MAX,
         basis_type="bspline",
-        lambda_ridge=LAMBDA,
-        lambda_rough=LAMBDA,
+        lambda_ridge=LAMBDA_RIDGE,
+        lambda_rough=LAMBDA_ROUGH,
         basis_eval_mode="ito",
+        endpoint_method="neb_ao_frac",
+        endpoint_frac=BASE_FRAC,
         dt=5.0,
     )
 
@@ -199,7 +209,7 @@ for topology in TOPOLOGIES:
 # Leave-one-cell-out CV: fit on 12 cells, evaluate mean squared error on the
 # held-out cell.  Lower is better.
 #
-# **Primary model-selection criterion**: leave-one-cell-out one-step velocity
+# **Secondary short-horizon diagnostic**: leave-one-cell-out one-step velocity
 # MSE, averaged equally across held-out cells.  Paired fold-by-fold loss
 # differences and their SEs are reported to assess whether score gaps between
 # topologies are meaningful.
@@ -248,12 +258,73 @@ for rank, topology in enumerate(sorted_topo_cv):
 
 
 # %% [markdown]
-# ## Bootstrap kernel confidence bands
+# ## Interpreting the one-step CV scale
 #
-# 250 cell-level resamples per topology; shaded band = 5–95% quantile interval.
+# The absolute LOOCV MSE values are small because one-frame chromosome
+# velocities are small and strongly noise-dominated. To calibrate the scale, we
+# compare the fitted models against two simple references:
+#
+# - **Zero-velocity baseline**: predict `v = 0` for every held-out coordinate.
+# - **Diffusion floor**: for overdamped Langevin motion, the per-coordinate
+#   one-step noise variance is approximately `2 D_x / dt`.
+#
+# If the fitted models sit close to these references, then one-step CV is still
+# a sensible primary score, but it should not be expected to sharply separate
+# topologies on its own.
 
 # %%
-N_BOOT = 50
+ref_cfg = configs[TOPOLOGIES[0]]
+baseline_basis_xy = BSplineBasis(R_MIN, R_MAX, N_BASIS)
+zero_baseline_errors = np.full(len(cells), np.nan, dtype=np.float64)
+held_out_abs_vel = np.full(len(cells), np.nan, dtype=np.float64)
+
+for held_out_index, cell in enumerate(cells):
+    _, V_test = build_design_matrix(
+        [cell],
+        basis_xx=None,
+        basis_xy=baseline_basis_xy,
+        basis_eval_mode=ref_cfg.basis_eval_mode,
+        topology="poles",
+    )
+    if V_test.size == 0:
+        continue
+    zero_baseline_errors[held_out_index] = float(np.mean(V_test**2))
+    held_out_abs_vel[held_out_index] = float(np.mean(np.abs(V_test)))
+
+zero_baseline_mean = float(np.nanmean(zero_baseline_errors))
+zero_baseline_rmse = float(np.sqrt(zero_baseline_mean))
+mean_abs_velocity = float(np.nanmean(held_out_abs_vel))
+noise_floor = {
+    topology: 2.0 * models[topology].D_x / configs[topology].dt
+    for topology in TOPOLOGIES
+}
+
+print("\n1-step CV scale check")
+print("=" * 116)
+print(f"Zero-velocity baseline: MSE={zero_baseline_mean:.8f}  RMSE={zero_baseline_rmse:.5f} um/s")
+print(f"Mean held-out |v|:      {mean_abs_velocity:.5f} um/s")
+print("-" * 116)
+print(f"{'Topology':<22} {'CV MSE':>12} {'impr vs 0':>11} {'Δ vs 0':>10} {'2D/dt':>12} {'CV/(2D/dt)':>12}")
+print("-" * 116)
+for topology in sorted_topo_cv:
+    cv = cv_results[topology].mean_error
+    gain = zero_baseline_mean - cv
+    gain_pct = 100.0 * gain / zero_baseline_mean if zero_baseline_mean > 0 else np.nan
+    floor = noise_floor[topology]
+    ratio = cv / floor if floor > 0 else np.nan
+    print(f"  {topology:<22} {cv:>12.8f} {gain_pct:>+10.2f}% {gain:>10.2e} {floor:>12.8f} {ratio:>12.3f}")
+print("=" * 116)
+print("These one-step losses are close to both the zero-velocity baseline and the diffusion-noise floor.")
+print("So the primary CV score is sensible, but in this dataset it only weakly separates the topologies.")
+
+
+# %% [markdown]
+# ## Bootstrap kernel confidence bands
+#
+# N cell-level resamples per topology; shaded band = 5–95% quantile interval.
+
+# %%
+N_BOOT = 20
 boot_rng = np.random.default_rng(42)
 
 print(f"Bootstrapping kernels ({N_BOOT} resamples × 4 topologies)...")
@@ -376,6 +447,18 @@ plt.show()
 # 2. **Leave-one-cell-out rollout validation** that aggregates across all cells
 #    and scores axial/radial summary trajectories and final-frame
 #    distributions.
+#
+# Notes for interpretation:
+#
+# - In the qualitative plots below, the thick curves are means over **all**
+#   chromosomes. The thin colored lines show only a small displayed subset.
+# - For the `poles` topologies, symmetric attraction to the two poles does **not**
+#   automatically imply centering at the spindle midpoint. If attraction
+#   weakens with distance, the nearer pole wins and the midpoint is not a
+#   stable fixed point.
+# - If a `center` topology still drifts axially in rollout, that usually means
+#   the learned attraction to the moving spindle center is too weak to keep up
+#   with the real partner motion, not necessarily that there is a sign bug.
 
 # %%
 EXAMPLE_CELL_IDX = 1
@@ -449,17 +532,17 @@ for cell_idx in QUAL_CELL_IDXS:
             ax_radial.plot(time_axis, sf_cell_real.radial[:, chrom_idx], color="k", alpha=0.15, linewidth=0.8)
             ax_radial.plot(time_axis, sf_sim.radial[:, chrom_idx], color=color, alpha=0.18, linewidth=0.8)
 
-        real_axial_subset_mean = np.nanmean(sf_cell_real.axial[:, trace_idx], axis=1)
-        sim_axial_subset_mean = np.nanmean(sf_sim.axial[:, trace_idx], axis=1)
-        real_radial_subset_mean = np.nanmean(sf_cell_real.radial[:, trace_idx], axis=1)
-        sim_radial_subset_mean = np.nanmean(sf_sim.radial[:, trace_idx], axis=1)
+        real_axial_mean = np.nanmean(sf_cell_real.axial, axis=1)
+        sim_axial_mean = np.nanmean(sf_sim.axial, axis=1)
+        real_radial_mean = np.nanmean(sf_cell_real.radial, axis=1)
+        sim_radial_mean = np.nanmean(sf_sim.radial, axis=1)
 
-        ax_axial.plot(time_axis, real_axial_subset_mean, "k-", linewidth=2.0, label="Displayed real mean")
-        ax_axial.plot(time_axis, sim_axial_subset_mean, color=color, linestyle="--", linewidth=2.0,
-                      label="Displayed rollout mean")
-        ax_radial.plot(time_axis, real_radial_subset_mean, "k-", linewidth=2.0, label="Displayed real mean")
-        ax_radial.plot(time_axis, sim_radial_subset_mean, color=color, linestyle="--", linewidth=2.0,
-                       label="Displayed rollout mean")
+        ax_axial.plot(time_axis, real_axial_mean, "k-", linewidth=2.0, label="All-chromosome real mean")
+        ax_axial.plot(time_axis, sim_axial_mean, color=color, linestyle="--", linewidth=2.0,
+                      label="All-chromosome rollout mean")
+        ax_radial.plot(time_axis, real_radial_mean, "k-", linewidth=2.0, label="All-chromosome real mean")
+        ax_radial.plot(time_axis, sim_radial_mean, color=color, linestyle="--", linewidth=2.0,
+                       label="All-chromosome rollout mean")
 
         ax_axial.set_title(f"Axial — {topology}", fontsize=9)
         ax_radial.set_title(f"Radial — {topology}", fontsize=9)
@@ -472,7 +555,7 @@ for cell_idx in QUAL_CELL_IDXS:
         ax_radial.legend(fontsize=7)
 
     fig.suptitle(f"Single-rollout qualitative check — {cell.cell_id}\n"
-                 "Thin lines = representative chromosome traces, thick lines = means of displayed traces")
+                 "Thin lines = representative chromosome traces, thick lines = means over all chromosomes")
     fig.tight_layout()
     plt.show()
 
@@ -579,7 +662,7 @@ plt.show()
 
 # %%
 print("Running leave-one-cell-out rollout validation "
-      f"({len(TOPOLOGIES)} topologies × {len(cells)} folds × {ROLLOUT_REPS} rollouts)...")
+      f"({len(TOPOLOGIES)} topologies × {len(cells)} folds × {ROLLOUT_REPS} rollout replicates)...")
 rollout_results: dict[str, RolloutCVResult] = {}
 for topo_index, topology in enumerate(TOPOLOGIES):
     rollout_results[topology] = rollout_cross_validate(
@@ -590,7 +673,8 @@ for topo_index, topology in enumerate(TOPOLOGIES):
         rng=np.random.default_rng(200 + topo_index),
     )
     rr = rollout_results[topology]
-    print(f"  {topology:<22}  axial_MSE={np.nanmean(rr.axial_mse):.5f}  "
+    print(f"  {topology:<22}  path_MSE={np.nanmean(rr.path_mse):.5f}  "
+          f"axial_MSE={np.nanmean(rr.axial_mse):.5f}  "
           f"radial_MSE={np.nanmean(rr.radial_mse):.5f}  "
           f"endpoint_MSE={np.nanmean(rr.endpoint_mean_error):.5f}  "
           f"final_W1(ax,rad)=({np.nanmean(rr.final_axial_wasserstein):.4f}, "
@@ -598,9 +682,8 @@ for topo_index, topology in enumerate(TOPOLOGIES):
 
 
 # %%
-rollout_time_score = {
-    topology: float(np.nanmean(rollout_results[topology].axial_mse)
-                    + np.nanmean(rollout_results[topology].radial_mse))
+rollout_mse_score = {
+    topology: float(np.nanmean(rollout_results[topology].path_mse))
     for topology in TOPOLOGIES
 }
 rollout_endpoint_score = {
@@ -616,11 +699,11 @@ rollout_dist_score = {
 fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
 x = np.arange(len(TOPOLOGIES))
 
-axes[0].bar(x, [rollout_time_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[0].bar(x, [rollout_mse_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[0].set_xticks(x)
 axes[0].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[0].set_ylabel("Mean rollout trajectory error (um^2)")
-axes[0].set_title("LOOCV rollout score\n(axial MSE + radial MSE)")
+axes[0].set_ylabel("Path MSE (um^2)")
+axes[0].set_title("LOOCV rollout path MSE\n(per-chromosome 3D MSE)")
 
 axes[1].bar(x, [rollout_endpoint_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[1].set_xticks(x)
@@ -653,20 +736,21 @@ plt.show()
 
 # %%
 # Detailed LOOCV rollout table: per-metric means ± SE across held-out cells
+sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_mse_score[t])
 print("\nLOOCV rollout validation — detailed summary (mean ± SE across held-out cells)")
 print("=" * 120)
-print(f"{'Topology':<22} {'Axial MSE':>14} {'Radial MSE':>14} {'Endpoint':>14} "
+print(f"{'Topology':<22} {'Path MSE':>14} {'Axial MSE':>14} {'Radial MSE':>14} {'Endpoint':>14} "
       f"{'W1 axial':>14} {'W1 radial':>14}")
 print("-" * 120)
 
 n_cv_cells = len(cells)
-for topology in TOPOLOGIES:
+for topology in sorted_topo_rollout:
     rr = rollout_results[topology]
     def _fmt(arr):
         m = np.nanmean(arr)
         se = np.nanstd(arr) / np.sqrt(np.sum(np.isfinite(arr)))
         return f"{m:.4f} ± {se:.4f}"
-    print(f"  {topology:<22} {_fmt(rr.axial_mse):>14} {_fmt(rr.radial_mse):>14} "
+    print(f"  {topology:<22} {_fmt(rr.path_mse):>14} {_fmt(rr.axial_mse):>14} {_fmt(rr.radial_mse):>14} "
           f"{_fmt(rr.endpoint_mean_error):>14} "
           f"{_fmt(rr.final_axial_wasserstein):>14} {_fmt(rr.final_radial_wasserstein):>14}")
 
@@ -677,7 +761,7 @@ print("\nHeld-out forecast error by horizon (mean ± SE, axial+radial combined)"
 horizons = rollout_results[TOPOLOGIES[0]].horizons
 header = f"{'Topology':<22}" + "".join(f"  h={h:<5}" for h in horizons)
 print(header)
-for topology in TOPOLOGIES:
+for topology in sorted_topo_rollout:
     rr = rollout_results[topology]
     vals = []
     for hi in range(len(horizons)):
@@ -691,13 +775,11 @@ for topology in TOPOLOGIES:
 # %% [markdown]
 # ## Model selection summary
 #
-# **Primary criterion**: leave-one-cell-out one-step velocity MSE, with paired
-# fold-difference SEs to assess whether score gaps are meaningful.
+# **Primary criterion**: leave-one-cell-out rollout path MSE (per-chromosome 3D
+# position error, averaged over chromosomes and time, on held-out cells).
 #
-# **Secondary criterion**: LOOCV rollout validation (pathwise MSE, endpoint
-# error, final-frame distributional metrics).  This is the strongest test of
-# whether the learned dynamics reproduce real trajectories, but carries more
-# Monte Carlo noise than 1-step prediction.
+# **Secondary quantitative checks**: one-step velocity MSE, endpoint mismatch,
+# final-frame distributional metrics, and horizon-specific rollout errors.
 #
 # **Qualitative checks**: full-data forward simulations and kernel-shape /
 # physics plausibility (above).
@@ -706,33 +788,54 @@ for topology in TOPOLOGIES:
 sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
 best_mean_topo = sorted_topo[0]
 paired = paired_cv_differences(cv_results, reference=best_mean_topo)
+best_rollout_topo = sorted_topo_rollout[0]
+best_endpoint_topo = min(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
+best_dist_topo = min(TOPOLOGIES, key=lambda t: rollout_dist_score[t])
 
-print("Primary criterion: leave-one-cell-out 1-step velocity MSE")
+print("Primary criterion: leave-one-cell-out rollout path MSE (per-chromosome 3D)")
 print("=" * 105)
-print(f"{'Topology':<22} {'CV MSE':>12} {'SE':>10} {'Δ vs best':>10} {'SE(Δ)':>10} {'Δ/SE(Δ)':>8} "
-      f"{'D_x':>12} {'n_params':>9}")
+print(f"  {'Topology':<22} {'Path MSE':>14} {'vs best':>9} {'Endpoint':>10} {'W1 total':>10}")
 print("-" * 105)
 
-for topology in sorted_topo:
-    r = cv_results[topology]
-    m = models[topology]
-    mean_diff, se_diff = paired[topology]
-    ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
-    print(f"  {topology:<22} {r.mean_error:>12.8f} {r.fold_se:>10.2e} "
-          f"{mean_diff:>+10.2e} {se_diff:>10.2e} {ratio:>8.2f} "
-          f"{m.D_x:>12.8f} {m.theta.size:>9}")
-
-print("=" * 105)
-print(f"  Best mean: {best_mean_topo}")
-print(f"  Note: Δ/SE(Δ) < 1 means the gap is within one paired SE of zero.")
-
-print("\nSecondary criterion: LOOCV rollout validation (means across held-out cells)")
-print(f"  {'Topology':<22} {'Axial+Rad MSE':>14} {'Endpoint':>10} {'W1 total':>10}")
-for t in sorted(TOPOLOGIES, key=lambda t: rollout_time_score[t]):
-    print(f"  {t:<22} {rollout_time_score[t]:>14.4f} "
+best_rollout_score = rollout_mse_score[best_rollout_topo]
+for t in sorted_topo_rollout:
+    rel_pct = 100.0 * (rollout_mse_score[t] - best_rollout_score) / best_rollout_score if best_rollout_score > 0 else np.nan
+    print(f"  {t:<22} {rollout_mse_score[t]:>14.4f} {rel_pct:>+8.1f}% "
           f"{rollout_endpoint_score[t]:>10.4f} {rollout_dist_score[t]:>10.4f}")
 
-best_topology = best_mean_topo
+print("=" * 105)
+print(f"  Primary rollout selector: {best_rollout_topo}")
+print("  Endpoint and W1 are reported separately as supporting diagnostics.")
+
+print("\nSecondary diagnostic: leave-one-cell-out 1-step velocity MSE")
+print(f"  {'Topology':<22} {'CV MSE':>12} {'vs null':>9} {'SE':>10} {'Δ vs best':>10} {'SE(Δ)':>10} {'Δ/SE(Δ)':>8}")
+for topology in sorted_topo:
+    r = cv_results[topology]
+    mean_diff, se_diff = paired[topology]
+    ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
+    gain_pct = 100.0 * (zero_baseline_mean - r.mean_error) / zero_baseline_mean if zero_baseline_mean > 0 else np.nan
+    print(f"  {topology:<22} {r.mean_error:>12.8f} {gain_pct:>+8.2f}% {r.fold_se:>10.2e} "
+          f"{mean_diff:>+10.2e} {se_diff:>10.2e} {ratio:>8.2f}")
+print("  The one-step loss remains useful, but in this dataset it is less discriminative than the rollout MSE.")
+
+print("\nSynthesis")
+print("=" * 105)
+print(f"  Primary selector (path MSE): {best_rollout_topo}")
+print(f"  Best 1-step CV score:           {best_mean_topo}")
+print(f"  Best rollout endpoint score:  {best_endpoint_topo}")
+print(f"  Best rollout final W1 score:  {best_dist_topo}")
+if best_rollout_topo == best_endpoint_topo == best_dist_topo:
+    print(f"  The rollout diagnostics agree on {best_rollout_topo}.")
+else:
+    print("  The rollout diagnostics are not fully unanimous, but they point to the same small subset of topologies.")
+if best_mean_topo == best_rollout_topo:
+    print("  The rollout selector and the 1-step diagnostic agree.")
+else:
+    print("  The rollout selector and the 1-step diagnostic do not agree.")
+    print("  The 1-step CV gap is small, while rollout is more discriminative on long-horizon behavior.")
+print("=" * 105)
+
+best_topology = best_rollout_topo
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")

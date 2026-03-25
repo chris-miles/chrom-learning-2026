@@ -10,8 +10,8 @@ class FitConfig:
         endpoint_method: Trajectory trimming endpoint — ``"neb_ao_frac"``
             (default) or ``"end_sep"``.
         endpoint_frac: Fraction of the ``[NEB, AO]`` window to use (only for
-            ``"neb_ao_frac"``).  ``0.5`` = midpoint (default), ``1.0`` = full
-            window to AO.
+            ``"neb_ao_frac"``).  ``1/3`` keeps the early gathering phase
+            (default); ``0.5`` = midpoint, ``1.0`` = full window to AO.
         n_basis_xx: Number of basis functions for chromosome-chromosome kernel.
         n_basis_xy: Number of basis functions for centrosome-on-chromosome kernel.
         r_min_xx, r_max_xx: Domain of the xx basis (microns).
@@ -47,7 +47,7 @@ class FitConfig:
     _VALID_ENDPOINT_METHODS: ClassVar = frozenset({"neb_ao_frac", "end_sep"})
 
     endpoint_method: str = "neb_ao_frac"
-    endpoint_frac: float = 0.5
+    endpoint_frac: float = 1.0 / 3.0
     n_basis_xx: int = 10
     n_basis_xy: int = 10
     r_min_xx: float = 0.5
@@ -56,7 +56,7 @@ class FitConfig:
     r_max_xy: float = 12.0
     basis_type: str = "bspline"
     lambda_ridge: float = 1e-3
-    lambda_rough: float = 1e-3
+    lambda_rough: float = 1.0
     dt: float = 5.0
     d: int = 3
     basis_eval_mode: str = "ito"

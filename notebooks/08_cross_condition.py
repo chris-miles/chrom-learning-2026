@@ -61,13 +61,13 @@ CONFIG = FitConfig(
     r_max_xy=15.0,
     basis_type="bspline",
     lambda_ridge=1e-3,
-    lambda_rough=1e-3,
+    lambda_rough=1.0,
     basis_eval_mode="ito",
     dt=5.0,
 )
 
 # Conditions to compare.  Kid/Kif4A excluded: only 1/11 cells survives
-# the default min_frames=100 trimming, too thin for meaningful fitting.
+# the default min_frames=25 trimming, too thin for meaningful fitting.
 CONDITIONS = {
     "rpe18_ctr": "Control",
     "rod311_ctr": "Rod-d/d",

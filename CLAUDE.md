@@ -20,7 +20,7 @@ Notebooks in `notebooks/` are the primary interface. Raw data lives in `data/` (
 - dt = 5 seconds, spatial units = microns
 - Chromosome position = centroid of sister kinetochores (single 3D particle)
 - Centrosomes are external/given (not modeled); justified in notebook 03
-- Trajectories start at NEB, endpoint is configurable (default: `neb_ao_frac` with `frac=0.5`, i.e. midpoint of NEB-AO interval)
+- Trajectories start at NEB, endpoint is configurable (default: `neb_ao_frac` with `frac=1/3`, capturing the early gathering phase before deep metaphase)
 - Files with `neb = NaN` are anaphase-only and should be ignored
 - Primary condition for fitting: `rpe18_ctr` (13 cells with NEB annotations after loading)
 
@@ -28,7 +28,7 @@ Notebooks in `notebooks/` are the primary interface. Raw data lives in `data/` (
 
 This project uses SFI-inspired projection inference, not the full SFI/PASTIS pipeline. Key differences from the reference SFI implementation (github.com/ronceray/StochasticForceInference):
 
-- **Model selection**: We compare a small set of physically motivated interaction topologies via leave-one-cell-out CV, rather than sparse selection over a large operator library (PASTIS). Primary criterion is one-step velocity MSE with paired fold-difference SEs; rollout validation (pathwise MSE, endpoint error, final-frame Wasserstein) serves as a secondary check. Basis domains are fixed a priori from imaging resolution and spindle geometry to avoid preprocessing leakage.
+- **Model selection**: We compare a small set of physically motivated interaction topologies via leave-one-cell-out CV, rather than sparse selection over a large operator library (PASTIS). Primary criterion is leave-one-cell-out rollout path MSE (per-chromosome 3D position error, averaged over chromosomes and time, on held-out cells). One-step velocity MSE serves as a secondary short-horizon diagnostic. Endpoint mismatch, final-frame Wasserstein, and horizon-specific errors are reported as separate supporting diagnostics. Basis domains are fixed a priori from imaging resolution and spindle geometry to avoid preprocessing leakage.
 - **Variable diffusion**: D(x) is estimated in a second stage from residuals, not jointly inferred with the force. Notebook 06 includes a quantitative check showing the diffusion-gradient correction (grad(D), the "spurious force" in Ito convention) is small relative to the inferred force, justifying the decoupled approach.
 - **Stochastic calculus convention**: Default is Ito; sensitivity to Ito/Ito-shift/Stratonovich is checked in notebook 05.
 - **NRI validation**: Notebook 09 uses a Neural Relational Inference (NRI-lite) model as independent topology validation. The variational graph encoder infers latent edge types from trajectory windows; if it assigns high activity to pole->chromosome edges, that confirms the SFI topology selection without sharing any of the SFI assumptions.

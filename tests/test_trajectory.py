@@ -47,13 +47,14 @@ def test_pole_center() -> None:
     np.testing.assert_allclose(center, 0.0)
 
 
-def test_trim_trajectory_midpoint() -> None:
+def test_trim_trajectory_default_frac() -> None:
     cell = make_fake_cell()
-    trimmed = trim_trajectory(cell, method="neb_ao_frac", frac=0.5)
+    trimmed = trim_trajectory(cell, method="neb_ao_frac")
     assert isinstance(trimmed, TrimmedCell)
     # neb=10 (1-based) -> start=9; ao_mean=222 (1-based) -> 221 (0-based)
-    # endpoint = round(9 + 0.5 * (221 - 9)) = 115; window = 115 - 9 + 1 = 107
-    expected_len = 107
+    # endpoint = round(9 + (1/3) * (221 - 9)) = round(9 + 70.667) = 80
+    # window = 80 - 9 + 1 = 72
+    expected_len = 72
     assert trimmed.chromosomes.shape[0] == expected_len
     assert trimmed.centrioles.shape[0] == expected_len
 
