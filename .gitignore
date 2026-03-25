@@ -34,8 +34,13 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # Virtual environments
 .venv/
 venv/
 env/
+
+# Internal/temp files
+docs/archive/
+paper_text_temp.txt
