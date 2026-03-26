@@ -21,8 +21,8 @@ As independent validation, notebook 09 uses a [Neural Relational Inference](http
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
   - `02_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time (binned comparison, effect sizes, chromosome-level permutation test)
   - `03_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
-  - `04_model_selection.py` — Compares 4 interaction topologies via leave-one-cell-out CV (primary: 1-step velocity MSE with paired fold-difference SEs; secondary: rollout validation), kernel plausibility, and forward simulation
-  - `05_robustness.py` — Hyperparameter sensitivity: basis size, regularization, estimator mode, endpoint method, diffusion estimation
+  - `04_model_selection.py` — Compares 4 interaction topologies via leave-one-cell-out CV (primary: ensemble-mean MSE; supporting: per-rep path MSE, 1-step velocity MSE, W1), kernel plausibility, and forward simulation
+  - `05_robustness.py` — Hyperparameter sensitivity: joint (n_basis, ridge, roughness) grid sweep, estimator mode, endpoint method, diffusion estimation
   - `06_diffusion_landscape.py` — Spatially-varying diffusion D(x): multi-estimator comparison, per-cell consistency, coordinate axis comparison
   - `07_per_cell_heterogeneity.py` — Per-cell kernel variability vs pooled bootstrap uncertainty, correlation with cell features
   - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1)
@@ -45,10 +45,13 @@ Each `.mat` file contains one cell's tracked trajectories:
 - Metadata: NEB frame, anaphase onset estimates
 
 Files with `neb = NaN` are treated as anaphase-only and are excluded from the
-prometaphase fitting pipeline.
+prometaphase fitting pipeline. Cells with anomalous spindle geometry are moved
+to subdirectories (`data/excluded_horizontal/`, `data/excluded_invagination/`,
+`data/excluded_outlier/`) and excluded from fitting; notebook 01 visualizes why.
 
 Primary fitting dataset: `rpe18_ctr` NEB-annotated subset
-(13 RPE1 control cells with NEB annotations, 5 s frame interval, micron units).
+(12 RPE1 control cells with NEB annotations, 5 s frame interval, micron units;
+507 excluded as oblique outlier).
 
 ## Key options
 
@@ -65,7 +68,7 @@ All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init
 
 This project uses SFI-inspired projection inference with cross-validated interaction topologies. We fit pairwise radial kernels via penalized regression (as in SFI's projection framework) but differ from the full SFI/PASTIS pipeline in two ways: (1) model selection compares a small set of physically motivated topologies rather than sparse selection over a large basis library, and (2) spatially varying diffusion D(x) is estimated in a second stage from residuals rather than jointly inferred. Notebook 06 validates that the diffusion-gradient correction is negligible for our data.
 
-Model topology is selected using leave-one-cell-out rollout path MSE (per-chromosome 3D position error on held-out cells) as the primary criterion. One-step velocity MSE serves as a secondary short-horizon diagnostic; endpoint mismatch, final-frame Wasserstein, and horizon-specific errors are reported as separate supporting diagnostics. Kernel plausibility checks and NRI analysis provide additional evidence. Basis domains are fixed a priori from imaging resolution and spindle geometry.
+Model topology is selected using leave-one-cell-out ensemble-mean MSE (simulated positions averaged across replicates before comparing to reality, cancelling model-side stochastic variance) as the primary criterion. Per-rep path MSE, one-step velocity MSE, endpoint mismatch, final-frame Wasserstein, and horizon-specific errors are reported as supporting diagnostics. Kernel plausibility checks and NRI analysis provide additional evidence. Basis domains are fixed a priori from imaging resolution and spindle geometry.
 
 ### References
 
