@@ -16,7 +16,7 @@ ROOT = find_repo_root(Path(__file__).resolve().parent if "__file__" in dir() els
 
 from chromlearn.analysis.trajectory_viz import plot_cell_trajectories, plot_chromosome_cloud
 from chromlearn.io.catalog import CONDITIONS, list_cells, load_condition
-from chromlearn.io.loader import CellData, load_cell
+from chromlearn.io.loader import CellData, has_valid_neb, load_cell
 from chromlearn.io.trajectory import compute_end_sep, pole_pole_distance, trim_trajectory
 
 plt.rcParams["figure.dpi"] = 110
@@ -170,6 +170,95 @@ for idx in range(ncond, 2 * ncols_z):
 
 fig.suptitle("Spindle z-alignment per condition (high = vertical spindle)")
 fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## Included vs excluded cells — spindle angle
+#
+# Compare `|cos(θ_z)|` of the pole-pole axis for the included `rpe18_ctr`
+# cells against each excluded subfolder.  Horizontal-excluded cells have
+# spindles in the imaging plane (low `|cos(θ_z)|`); invagination and outlier
+# cells may differ in other ways.
+
+# %%
+EXCLUDED_DIRS = {
+    "excluded_horizontal": DATA_DIR / "excluded_horizontal",
+    "excluded_invagination": DATA_DIR / "excluded_invagination",
+    "excluded_outlier": DATA_DIR / "excluded_outlier",
+}
+
+excluded_cells: dict[str, list[CellData]] = {}
+for label, d in EXCLUDED_DIRS.items():
+    excluded_cells[label] = [
+        load_cell(p) for p in sorted(d.glob("*.mat")) if has_valid_neb(p)
+    ]
+
+# %%
+included_ctr = load_condition("rpe18_ctr")
+
+print(f"Included rpe18_ctr ({len(included_ctr)} cells):")
+for c in included_ctr:
+    print(f"  {c.cell_id}")
+for label, cells_exc in excluded_cells.items():
+    print(f"\n{label} ({len(cells_exc)} cells):")
+    for c in cells_exc:
+        print(f"  {c.cell_id}")
+
+groups = {"rpe18_ctr (included)": included_ctr}
+groups.update(excluded_cells)
+
+fig_angle, axes_angle = plt.subplots(1, len(groups), figsize=(5 * len(groups), 4), squeeze=False)
+
+for gi, (label, cells_group) in enumerate(groups.items()):
+    ax = axes_angle[0, gi]
+    for c in cells_group:
+        pole1 = c.centrioles[:, :, 0]
+        pole2 = c.centrioles[:, :, 1]
+        axis_vec = pole1 - pole2
+        cos_z = np.abs(axis_vec[:, 2]) / np.linalg.norm(axis_vec, axis=1)
+        neb_idx = c.neb - 1
+        vals = cos_z[neb_idx:]
+        ax.plot(vals, linewidth=0.9, label=c.cell_id.split("_")[-1])
+    ax.set_title(label, fontsize=10)
+    ax.set_xlabel("Frames after NEB", fontsize=8)
+    if gi == 0:
+        ax.set_ylabel("|cos(θ_z)|", fontsize=8)
+    ax.set_ylim(0, 1.05)
+    ax.set_xlim(0, 200)
+    ax.axhline(0.5, color="gray", linestyle=":", linewidth=0.5)
+    ax.legend(fontsize=6, ncol=2, loc="upper right")
+    ax.tick_params(labelsize=7)
+
+fig_angle.suptitle("Spindle z-alignment: included vs excluded cells")
+fig_angle.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## Included vs excluded cells — pole-pole distance
+#
+# Same grouping as above, now showing pole-pole distance vs time from NEB.
+
+# %%
+fig_ppd, axes_ppd = plt.subplots(1, len(groups), figsize=(5 * len(groups), 4), squeeze=False)
+
+for gi, (label, cells_group) in enumerate(groups.items()):
+    ax = axes_ppd[0, gi]
+    for c in cells_group:
+        ppd_vals = pole_pole_distance(c)
+        neb_idx = c.neb - 1
+        t_from_neb = np.arange(len(ppd_vals) - neb_idx) * c.dt
+        ax.plot(t_from_neb, ppd_vals[neb_idx:], linewidth=0.9,
+                label=c.cell_id.split("_")[-1])
+    ax.set_title(label, fontsize=10)
+    ax.set_xlabel("Time from NEB (s)", fontsize=8)
+    if gi == 0:
+        ax.set_ylabel("Pole-pole distance (μm)", fontsize=8)
+    ax.set_xlim(0, 1000)
+    ax.legend(fontsize=6, ncol=2, loc="lower right")
+    ax.tick_params(labelsize=7)
+
+fig_ppd.suptitle("Pole-pole distance: included vs excluded cells")
+fig_ppd.tight_layout()
 plt.show()
 
 # %% [markdown]
