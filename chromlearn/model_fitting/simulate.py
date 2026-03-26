@@ -116,6 +116,11 @@ def kernel_callables(model):
 def simulate_cell(cell, model, rng: np.random.Generator | None = None):
     """Simulate a cell forward using a fitted model and its real partner trajectories.
 
+    Uses the scalar diffusion coefficient ``model.D_x`` and the cell's time
+    step ``cell.dt``.  Any variable diffusion model attached to the
+    :class:`FittedModel` is ignored; variable D(x) is analysis-only (see
+    notebook 06) and not used during simulation rollouts.
+
     Args:
         cell: A TrimmedCell whose centrioles provide the partner positions and
             whose first frame provides the initial chromosome positions.

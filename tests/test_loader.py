@@ -38,3 +38,9 @@ def test_has_valid_neb_detects_anaphase_only_files() -> None:
 def test_load_cell_rejects_anaphase_only_files() -> None:
     with pytest.raises(ValueError, match="neb=NaN"):
         load_cell(DATA_DIR / "rpe18_ctr_622.mat")
+
+
+def test_condition_parsing_is_case_insensitive() -> None:
+    """Rod311_ctr_552.mat should get condition 'rod311_ctr', not 'Rod311_ctr'."""
+    cell = load_cell(DATA_DIR / "Rod311_ctr_552.mat")
+    assert cell.condition == "rod311_ctr"

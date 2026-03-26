@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "jupyter", "jupytext"]
+dev = ["pytest", "jupyter", "jupytext", "joblib"]
 
 [tool.setuptools.packages.find]
 include = ["chromlearn*"]

@@ -855,6 +855,12 @@ else:
 print("=" * 105)
 
 best_topology = best_rollout_topo
+print("\nMethodological note: topology selection uses the raw minimum of mean")
+print("LOOCV ensemble MSE across a small set of physically motivated topologies.")
+print("With only ~5 candidates this is unlikely to overfit, but the selection")
+print("does not include a formal paired-difference calibration rule (e.g.,")
+print("one-SE rule). The ± SE values above provide informal guidance; if the")
+print("gap between top candidates is within ~1 SE, the ranking is not definitive.")
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")

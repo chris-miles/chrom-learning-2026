@@ -3,5 +3,6 @@ scipy>=1.10
 matplotlib>=3.7
 jupyter
 h5py
+joblib
 pytest
 jupytext

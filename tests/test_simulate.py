@@ -1,8 +1,12 @@
 import numpy as np
 
+from chromlearn.io.trajectory import TrimmedCell
+from chromlearn.model_fitting.basis import BSplineBasis
+from chromlearn.model_fitting.model import FittedModel
 from chromlearn.model_fitting.simulate import (
     add_localization_noise,
     generate_synthetic_data,
+    simulate_cell,
     simulate_trajectories,
 )
 
@@ -131,3 +135,52 @@ def test_simulate_kernel_xx_none_differs_from_repulsive_xx():
     assert final_sep_with_xx > final_sep_no_xx, (
         f"Repulsive xx should increase separation: {final_sep_with_xx:.3f} vs {final_sep_no_xx:.3f}"
     )
+
+
+def test_simulate_cell_uses_cell_dt_and_scalar_D() -> None:
+    """simulate_cell must use cell.dt and model.D_x, ignoring model.dt."""
+    seed = 7
+    n_steps = 30
+    n_chrom = 3
+    basis_xy = BSplineBasis(0.3, 15.0, 5)
+    theta = np.zeros(5)
+
+    model = FittedModel(
+        theta=theta,
+        n_basis_xx=0,
+        n_basis_xy=5,
+        basis_xx=None,
+        basis_xy=basis_xy,
+        D_x=0.1,
+        dt=999.0,  # intentionally wrong; simulate_cell should not use this
+        topology="poles",
+    )
+    centrioles = np.zeros((n_steps + 1, 3, 2))
+    centrioles[:, 0, 0] = -5.0
+    centrioles[:, 0, 1] = 5.0
+    chromosomes = np.zeros((n_steps + 1, 3, n_chrom))
+    chromosomes[0, 0, :] = [0.0, 1.0, -1.0]
+
+    cell = TrimmedCell(
+        cell_id="test_000",
+        condition="test",
+        centrioles=centrioles,
+        chromosomes=chromosomes,
+        tracked=n_chrom,
+        dt=5.0,
+        start_frame=0,
+        end_frame=n_steps,
+    )
+
+    # Run twice with same seed — result should depend on cell.dt, not model.dt
+    traj_a, _ = simulate_cell(cell, model, rng=np.random.default_rng(seed))
+    traj_b, _ = simulate_cell(cell, model, rng=np.random.default_rng(seed))
+    np.testing.assert_array_equal(traj_a, traj_b)
+
+    # Changing model.dt should have NO effect
+    model_alt = FittedModel(
+        theta=theta, n_basis_xx=0, n_basis_xy=5, basis_xx=None,
+        basis_xy=basis_xy, D_x=0.1, dt=50.0, topology="poles",
+    )
+    traj_c, _ = simulate_cell(cell, model_alt, rng=np.random.default_rng(seed))
+    np.testing.assert_array_equal(traj_a, traj_c)

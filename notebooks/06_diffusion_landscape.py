@@ -318,9 +318,11 @@ plt.show()
 # Here we check whether grad(D) is small compared to the inferred force,
 # which would justify the decoupled approach.
 #
-# For radial pairwise forces, the relevant comparison is dD/dr vs F_xy(r)
-# at the same distances, since the centrosome-chromosome interaction dominates
-# the force budget.
+# **Coordinate caveat:** D is fit as a function of distance from spindle
+# center, while F_xy is a pairwise kernel evaluated at individual
+# pole-chromosome distances (and each chromosome interacts with both poles).
+# These are different 1D coordinates, so the comparison below is an
+# order-of-magnitude check, not an exact decomposition.
 
 # %%
 # Numerical derivative of D(distance) from the Vestergaard fit
@@ -347,9 +349,9 @@ ax = axes[0]
 ax.plot(eval_r, np.abs(F_xy), "C0-", linewidth=2, label="|F_xy(r)|")
 ax.plot(eval_r, np.abs(dD_dr), "C2--", linewidth=2, label="|dD/dr| (Vestergaard)")
 ax.plot(eval_r, np.abs(dD_dr_fc), "C3:", linewidth=2, label="|dD/dr| (f-corrected)")
-ax.set_xlabel("Distance from spindle center (um)")
+ax.set_xlabel("r (um)")
 ax.set_ylabel("Magnitude (um/s or um$^2$/s/um)")
-ax.set_title("Inferred force vs diffusion gradient")
+ax.set_title("Inferred force vs diffusion gradient\n(D: spindle-center dist; F: pole-chrom dist)")
 ax.legend(fontsize=8)
 ax.set_yscale("log")
 
@@ -361,13 +363,13 @@ ratio_fc = np.abs(dD_dr_fc) / safe_F
 ax.plot(eval_r, ratio_vest, "C2-", linewidth=2, label="Vestergaard")
 ax.plot(eval_r, ratio_fc, "C3--", linewidth=2, label="f-corrected")
 ax.axhline(0.1, color="0.5", linestyle=":", linewidth=1, label="10% threshold")
-ax.set_xlabel("Distance from spindle center (um)")
+ax.set_xlabel("r (um)")
 ax.set_ylabel("|dD/dr| / |F_xy|")
 ax.set_title("Diffusion gradient as fraction of inferred force")
 ax.legend(fontsize=8)
 ax.set_ylim(0, min(2.0, np.nanmax(ratio_vest) * 1.2))
 
-fig.suptitle("Diffusion-gradient correction: magnitude check")
+fig.suptitle("Diffusion-gradient correction: order-of-magnitude check")
 fig.tight_layout()
 plt.show()
 
@@ -381,11 +383,15 @@ print(f"Vestergaard:  median |dD/dr|/|F| = {median_ratio_vest:.3f}, "
       f"max = {max_ratio_vest:.3f}")
 print(f"F-corrected:  median |dD/dr|/|F| = {median_ratio_fc:.3f}, "
       f"max = {max_ratio_fc:.3f}")
+print("(Note: D is evaluated along spindle-center distance, F_xy along")
+print("pole-chromosome distance. This comparison is order-of-magnitude.)")
 if median_ratio_vest < 0.1 and median_ratio_fc < 0.1:
     print("=> Diffusion gradient is small relative to inferred force.")
     print("   Two-stage (force first, then D) approach is justified.")
 else:
-    print("=> Diffusion gradient is NOT negligible. Consider joint inference.")
+    print("=> Diffusion gradient is NOT negligible relative to inferred force.")
+    print("   The decoupled two-stage approach may introduce bias; consider")
+    print("   joint inference or reporting this as a methodological caveat.")
 
 # %% [markdown]
 # ## Summary

@@ -32,7 +32,7 @@ def _parse_condition(cell_id: str) -> str:
     parts = cell_id.rsplit("_", 1)
     if len(parts) != 2:
         raise ValueError(f"Could not parse condition from cell id '{cell_id}'.")
-    return parts[0]
+    return parts[0].lower()
 
 
 def _load_mat_scipy(path: Path) -> dict[str, Any]:
