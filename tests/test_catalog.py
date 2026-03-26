@@ -32,3 +32,4 @@ def test_load_condition() -> None:
 def test_catalog_skips_anaphase_only_files() -> None:
     cells = list_cells("rpe18_ctr", data_dir=DATA_DIR)
     assert "rpe18_ctr_622" not in cells
+    assert "rpe18_ctr_507" not in cells

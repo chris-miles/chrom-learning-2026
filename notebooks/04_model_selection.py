@@ -10,10 +10,12 @@
 # | **poles\_and\_chroms** | both poles | yes |
 # | **center\_and\_chroms** | pole midpoint | yes |
 #
-# Primary selection criterion: leave-one-cell-out rollout path MSE
-# (per-chromosome 3D position error on held-out cells).
-# Secondary quantitative checks: one-step velocity MSE, endpoint mismatch,
-# final-frame distribution mismatch, and horizon-specific rollout errors.
+# Primary selection criterion: leave-one-cell-out ensemble-mean MSE
+# (simulated positions averaged across replicates before comparing to
+# reality, cancelling stochastic noise to isolate systematic drift bias).
+# Secondary quantitative checks: per-rep path MSE, one-step velocity MSE,
+# endpoint mismatch, final-frame distribution mismatch, and
+# horizon-specific rollout errors.
 # Secondary qualitative checks: bootstrap CIs, kernel physics checks, and
 # representative forward simulations.
 
@@ -470,7 +472,7 @@ sf_real = spindle_frame(example_cell)
 
 QUAL_CELL_IDXS = sorted({0, len(cells) // 2, len(cells) - 1})
 QUAL_N_TRACES = 6
-ROLLOUT_REPS = 4
+ROLLOUT_REPS = 50
 ROLLOUT_HORIZONS = (1, 5, 10, 20)
 
 
@@ -673,7 +675,8 @@ for topo_index, topology in enumerate(TOPOLOGIES):
         rng=np.random.default_rng(200 + topo_index),
     )
     rr = rollout_results[topology]
-    print(f"  {topology:<22}  path_MSE={np.nanmean(rr.path_mse):.5f}  "
+    print(f"  {topology:<22}  ens_MSE={np.nanmean(rr.ensemble_mse):.5f}  "
+          f"path_MSE={np.nanmean(rr.path_mse):.5f}  "
           f"axial_MSE={np.nanmean(rr.axial_mse):.5f}  "
           f"radial_MSE={np.nanmean(rr.radial_mse):.5f}  "
           f"endpoint_MSE={np.nanmean(rr.endpoint_mean_error):.5f}  "
@@ -682,6 +685,10 @@ for topo_index, topology in enumerate(TOPOLOGIES):
 
 
 # %%
+rollout_ensemble_mse_score = {
+    topology: float(np.nanmean(rollout_results[topology].ensemble_mse))
+    for topology in TOPOLOGIES
+}
 rollout_mse_score = {
     topology: float(np.nanmean(rollout_results[topology].path_mse))
     for topology in TOPOLOGIES
@@ -696,39 +703,45 @@ rollout_dist_score = {
     for topology in TOPOLOGIES
 }
 
-fig, axes = plt.subplots(1, 4, figsize=(20, 4.5))
+fig, axes = plt.subplots(1, 5, figsize=(24, 4.5))
 x = np.arange(len(TOPOLOGIES))
 
-axes[0].bar(x, [rollout_mse_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[0].bar(x, [rollout_ensemble_mse_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[0].set_xticks(x)
 axes[0].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[0].set_ylabel("Path MSE (um^2)")
-axes[0].set_title("LOOCV rollout path MSE\n(per-chromosome 3D MSE)")
+axes[0].set_ylabel("Ensemble MSE (um^2)")
+axes[0].set_title("LOOCV ensemble MSE\n(avg positions, then compare)")
 
-axes[1].bar(x, [rollout_endpoint_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[1].bar(x, [rollout_mse_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[1].set_xticks(x)
 axes[1].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[1].set_ylabel("Endpoint mean error (um^2)")
-axes[1].set_title("LOOCV endpoint-only score\n(final axial/radial mean mismatch)")
+axes[1].set_ylabel("Path MSE (um^2)")
+axes[1].set_title("LOOCV rollout path MSE\n(per-chromosome 3D MSE)")
 
-axes[2].bar(x, [rollout_dist_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[2].bar(x, [rollout_endpoint_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[2].set_xticks(x)
 axes[2].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[2].set_ylabel("Final-frame W1 distance (um)")
-axes[2].set_title("LOOCV final distribution mismatch\n(axial W1 + radial W1)")
+axes[2].set_ylabel("Endpoint mean error (um^2)")
+axes[2].set_title("LOOCV endpoint-only score\n(final axial/radial mean mismatch)")
+
+axes[3].bar(x, [rollout_dist_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[3].set_xticks(x)
+axes[3].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
+axes[3].set_ylabel("Final-frame W1 distance (um)")
+axes[3].set_title("LOOCV final distribution mismatch\n(axial W1 + radial W1)")
 
 for topo_index, topology in enumerate(TOPOLOGIES):
-    axes[3].plot(
+    axes[4].plot(
         rollout_results[topology].horizons,
         np.nanmean(rollout_results[topology].horizon_errors, axis=0),
         marker="o",
         linewidth=1.8,
         label=topology,
     )
-axes[3].set_xlabel("Forecast horizon (frames)")
-axes[3].set_ylabel("Combined axial/radial error (um^2)")
-axes[3].set_title("Held-out forecast error vs horizon")
-axes[3].legend(fontsize=8)
+axes[4].set_xlabel("Forecast horizon (frames)")
+axes[4].set_ylabel("Combined axial/radial error (um^2)")
+axes[4].set_title("Held-out forecast error vs horizon")
+axes[4].legend(fontsize=8)
 
 fig.suptitle("Aggregate rollout validation across held-out cells")
 fig.tight_layout()
@@ -736,12 +749,12 @@ plt.show()
 
 # %%
 # Detailed LOOCV rollout table: per-metric means ± SE across held-out cells
-sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_mse_score[t])
+sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
 print("\nLOOCV rollout validation — detailed summary (mean ± SE across held-out cells)")
 print("=" * 120)
-print(f"{'Topology':<22} {'Path MSE':>14} {'Axial MSE':>14} {'Radial MSE':>14} {'Endpoint':>14} "
+print(f"{'Topology':<22} {'Ensemble MSE':>14} {'Path MSE':>14} {'Axial MSE':>14} {'Radial MSE':>14} {'Endpoint':>14} "
       f"{'W1 axial':>14} {'W1 radial':>14}")
-print("-" * 120)
+print("-" * 135)
 
 n_cv_cells = len(cells)
 for topology in sorted_topo_rollout:
@@ -750,7 +763,7 @@ for topology in sorted_topo_rollout:
         m = np.nanmean(arr)
         se = np.nanstd(arr) / np.sqrt(np.sum(np.isfinite(arr)))
         return f"{m:.4f} ± {se:.4f}"
-    print(f"  {topology:<22} {_fmt(rr.path_mse):>14} {_fmt(rr.axial_mse):>14} {_fmt(rr.radial_mse):>14} "
+    print(f"  {topology:<22} {_fmt(rr.ensemble_mse):>14} {_fmt(rr.path_mse):>14} {_fmt(rr.axial_mse):>14} {_fmt(rr.radial_mse):>14} "
           f"{_fmt(rr.endpoint_mean_error):>14} "
           f"{_fmt(rr.final_axial_wasserstein):>14} {_fmt(rr.final_radial_wasserstein):>14}")
 
@@ -775,11 +788,16 @@ for topology in sorted_topo_rollout:
 # %% [markdown]
 # ## Model selection summary
 #
-# **Primary criterion**: leave-one-cell-out rollout path MSE (per-chromosome 3D
-# position error, averaged over chromosomes and time, on held-out cells).
+# **Primary criterion**: leave-one-cell-out ensemble-mean MSE (simulated
+# positions averaged across replicates before comparing to reality,
+# cancelling model-side stochastic variance; the residual is drift bias
+# plus a topology-invariant data-noise floor).  This is a conditional-mean
+# trajectory score targeting drift/topology selection, not a full
+# distributional SDE criterion.
 #
-# **Secondary quantitative checks**: one-step velocity MSE, endpoint mismatch,
-# final-frame distributional metrics, and horizon-specific rollout errors.
+# **Secondary quantitative checks**: per-rep path MSE, one-step velocity MSE,
+# endpoint mismatch, final-frame distributional metrics, and horizon-specific
+# rollout errors.
 #
 # **Qualitative checks**: full-data forward simulations and kernel-shape /
 # physics plausibility (above).
@@ -792,20 +810,21 @@ best_rollout_topo = sorted_topo_rollout[0]
 best_endpoint_topo = min(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
 best_dist_topo = min(TOPOLOGIES, key=lambda t: rollout_dist_score[t])
 
-print("Primary criterion: leave-one-cell-out rollout path MSE (per-chromosome 3D)")
-print("=" * 105)
-print(f"  {'Topology':<22} {'Path MSE':>14} {'vs best':>9} {'Endpoint':>10} {'W1 total':>10}")
-print("-" * 105)
+print("Primary criterion: leave-one-cell-out ensemble-mean MSE (drift bias only)")
+print("=" * 115)
+print(f"  {'Topology':<22} {'Ens MSE':>14} {'vs best':>9} {'Path MSE':>14} {'Endpoint':>10} {'W1 total':>10}")
+print("-" * 115)
 
-best_rollout_score = rollout_mse_score[best_rollout_topo]
+best_rollout_score = rollout_ensemble_mse_score[best_rollout_topo]
 for t in sorted_topo_rollout:
-    rel_pct = 100.0 * (rollout_mse_score[t] - best_rollout_score) / best_rollout_score if best_rollout_score > 0 else np.nan
-    print(f"  {t:<22} {rollout_mse_score[t]:>14.4f} {rel_pct:>+8.1f}% "
+    rel_pct = 100.0 * (rollout_ensemble_mse_score[t] - best_rollout_score) / best_rollout_score if best_rollout_score > 0 else np.nan
+    print(f"  {t:<22} {rollout_ensemble_mse_score[t]:>14.4f} {rel_pct:>+8.1f}% "
+          f"{rollout_mse_score[t]:>14.4f} "
           f"{rollout_endpoint_score[t]:>10.4f} {rollout_dist_score[t]:>10.4f}")
 
-print("=" * 105)
+print("=" * 115)
 print(f"  Primary rollout selector: {best_rollout_topo}")
-print("  Endpoint and W1 are reported separately as supporting diagnostics.")
+print("  Path MSE, endpoint, and W1 are reported separately as supporting diagnostics.")
 
 print("\nSecondary diagnostic: leave-one-cell-out 1-step velocity MSE")
 print(f"  {'Topology':<22} {'CV MSE':>12} {'vs null':>9} {'SE':>10} {'Δ vs best':>10} {'SE(Δ)':>10} {'Δ/SE(Δ)':>8}")
@@ -819,11 +838,11 @@ for topology in sorted_topo:
 print("  The one-step loss remains useful, but in this dataset it is less discriminative than the rollout MSE.")
 
 print("\nSynthesis")
-print("=" * 105)
-print(f"  Primary selector (path MSE): {best_rollout_topo}")
-print(f"  Best 1-step CV score:           {best_mean_topo}")
-print(f"  Best rollout endpoint score:  {best_endpoint_topo}")
-print(f"  Best rollout final W1 score:  {best_dist_topo}")
+print("=" * 115)
+print(f"  Primary selector (ensemble MSE): {best_rollout_topo}")
+print(f"  Best 1-step CV score:            {best_mean_topo}")
+print(f"  Best rollout endpoint score:     {best_endpoint_topo}")
+print(f"  Best rollout final W1 score:     {best_dist_topo}")
 if best_rollout_topo == best_endpoint_topo == best_dist_topo:
     print(f"  The rollout diagnostics agree on {best_rollout_topo}.")
 else:

@@ -60,10 +60,17 @@ class RolloutCVResult:
     across replicates.  This includes both the model's drift bias and its
     stochastic variance, i.e. it answers "if I run this simulator once, how
     close is the output to reality?"
+
+    ``ensemble_mse`` averages the simulated positions across replicates before
+    comparing to reality.  This cancels model-side stochastic variance,
+    leaving drift bias plus a topology-invariant data-noise floor.  It is
+    a conditional-mean trajectory score (not a full distributional SDE
+    criterion), appropriate when the goal is topology/drift selection.
     """
 
     horizons: np.ndarray
     path_mse: np.ndarray
+    ensemble_mse: np.ndarray
     axial_mse: np.ndarray
     radial_mse: np.ndarray
     endpoint_mean_error: np.ndarray
@@ -222,21 +229,33 @@ def bootstrap_kernels(
 def cross_validate(
     cells: list[TrimmedCell],
     config: FitConfig,
+    k_folds: int | None = None,
 ) -> CVResult:
-    """Leave-one-cell-out cross-validation.
+    """Cross-validation (LOO or k-fold).
 
-    For each fold one cell is held out, the model is fit on the remaining
-    cells, and the mean squared prediction error on the held-out cell is
-    recorded.
+    For each fold the held-out cells are removed, the model is fit on the
+    remaining cells, and the mean squared prediction error on each held-out
+    cell is recorded.  Per-cell error array always has shape ``(n_cells,)``.
+
+    When *k_folds* is ``None`` or ``>= len(cells)`` this is leave-one-out.
 
     Returns:
-        CVResult with per-fold errors and summary statistics.
+        CVResult with per-cell errors and summary statistics.
     """
     from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
     from chromlearn.model_fitting.features import build_design_matrix
 
     if not cells:
         raise ValueError("cross_validate requires at least one cell.")
+
+    n_cells = len(cells)
+
+    if k_folds is None or k_folds >= n_cells:
+        folds = [[i] for i in range(n_cells)]
+    else:
+        if k_folds < 2:
+            raise ValueError("k_folds must be >= 2 (or None for LOO).")
+        folds = [group.tolist() for group in np.array_split(range(n_cells), k_folds)]
 
     BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
     if _topology_has_chroms(config.topology):
@@ -247,13 +266,11 @@ def cross_validate(
 
     R_xx = basis_xx.roughness_matrix() if basis_xx is not None else None
     roughness = _block_roughness(R_xx, basis_xy.roughness_matrix())
-    errors = np.full(len(cells), np.nan, dtype=np.float64)
+    errors = np.full(n_cells, np.nan, dtype=np.float64)
 
-    for held_out_index in range(len(cells)):
-        train_cells = [
-            cell for index, cell in enumerate(cells) if index != held_out_index
-        ]
-        test_cells = [cells[held_out_index]]
+    for fold_indices in folds:
+        fold_set = set(fold_indices)
+        train_cells = [cell for i, cell in enumerate(cells) if i not in fold_set]
 
         G_train, V_train = build_design_matrix(
             train_cells, basis_xx, basis_xy,
@@ -270,15 +287,18 @@ def cross_validate(
             lambda_rough=config.lambda_rough,
             R=roughness,
         )
-        G_test, V_test = build_design_matrix(
-            test_cells, basis_xx, basis_xy,
-            basis_eval_mode=config.basis_eval_mode,
-            topology=config.topology,
-        )
-        if G_test.size == 0:
-            continue
-        predictions = G_test @ fit_result.theta
-        errors[held_out_index] = np.mean((V_test - predictions) ** 2)
+
+        for held_out_index in fold_indices:
+            test_cells = [cells[held_out_index]]
+            G_test, V_test = build_design_matrix(
+                test_cells, basis_xx, basis_xy,
+                basis_eval_mode=config.basis_eval_mode,
+                topology=config.topology,
+            )
+            if G_test.size == 0:
+                continue
+            predictions = G_test @ fit_result.theta
+            errors[held_out_index] = np.mean((V_test - predictions) ** 2)
 
     return CVResult(
         held_out_errors=errors,
@@ -293,12 +313,19 @@ def rollout_cross_validate(
     n_reps: int = 8,
     horizons: tuple[int, ...] = (1, 5, 10, 20),
     rng: np.random.Generator | None = None,
+    k_folds: int | None = None,
 ) -> RolloutCVResult:
-    """Leave-one-cell-out rollout validation on spindle-frame summaries.
+    """Rollout cross-validation (LOO or k-fold).
 
-    Each fold fits the model on ``len(cells) - 1`` cells, simulates the held-out
-    cell forward from its real initial conditions while using its real partner
+    Each fold fits the model on training cells, simulates each held-out cell
+    forward from its real initial conditions while using its real partner
     trajectories, and compares the resulting spindle-frame summaries.
+
+    When *k_folds* is ``None`` or ``>= len(cells)`` this is leave-one-out.
+    Otherwise cells are split into *k_folds* groups (using
+    ``np.array_split``, so non-divisible sizes are handled automatically).
+    Per-cell metric arrays always have shape ``(n_cells,)`` regardless of
+    fold structure.
 
     Metrics per held-out cell:
 
@@ -321,7 +348,17 @@ def rollout_cross_validate(
         raise ValueError("horizons must contain at least one positive integer.")
 
     n_cells = len(cells)
+
+    # Build fold assignments
+    if k_folds is None or k_folds >= n_cells:
+        folds = [[i] for i in range(n_cells)]
+    else:
+        if k_folds < 2:
+            raise ValueError("k_folds must be >= 2 (or None for LOO).")
+        folds = [group.tolist() for group in np.array_split(range(n_cells), k_folds)]
+
     path_mse = np.full(n_cells, np.nan, dtype=np.float64)
+    ensemble_mse = np.full(n_cells, np.nan, dtype=np.float64)
     axial_mse = np.full(n_cells, np.nan, dtype=np.float64)
     radial_mse = np.full(n_cells, np.nan, dtype=np.float64)
     endpoint_mean_error = np.full(n_cells, np.nan, dtype=np.float64)
@@ -329,95 +366,112 @@ def rollout_cross_validate(
     final_radial_wasserstein = np.full(n_cells, np.nan, dtype=np.float64)
     horizon_errors = np.full((n_cells, horizon_values.size), np.nan, dtype=np.float64)
 
-    for held_out_index in range(n_cells):
-        train_cells = [
-            cell for index, cell in enumerate(cells) if index != held_out_index
-        ]
-        test_cell = cells[held_out_index]
+    fold_set: set[int]
+    for fold_indices in folds:
+        fold_set = set(fold_indices)
+        train_cells = [cell for i, cell in enumerate(cells) if i not in fold_set]
         model = fit_model(train_cells, config)
 
-        real_sf = spindle_frame(test_cell)
-        real_axial_mean = np.nanmean(real_sf.axial, axis=1)
-        real_radial_mean = np.nanmean(real_sf.radial, axis=1)
+        for held_out_index in fold_indices:
+            test_cell = cells[held_out_index]
 
-        # Simulate n_reps rollouts; keep both raw 3D positions and spindle-frame
-        sim_chroms = []
-        sim_rollouts = []
-        for _ in range(n_reps):
-            rep_rng = np.random.default_rng(
-                int(rng.integers(0, np.iinfo(np.int64).max))
+            real_sf = spindle_frame(test_cell)
+            real_axial_mean = np.nanmean(real_sf.axial, axis=1)
+            real_radial_mean = np.nanmean(real_sf.radial, axis=1)
+
+            # Simulate n_reps rollouts
+            sim_chroms = []
+            sim_rollouts = []
+            for _ in range(n_reps):
+                rep_rng = np.random.default_rng(
+                    int(rng.integers(0, np.iinfo(np.int64).max))
+                )
+                _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
+                sim_chroms.append(sim_cell.chromosomes)
+                sim_rollouts.append(spindle_frame(sim_cell))
+
+            # Per-rep path MSE (includes both drift bias and stochastic variance)
+            real_chroms = test_cell.chromosomes  # (T, 3, N)
+            rep_mses = []
+            for sim_chrom in sim_chroms:
+                diff_3d = real_chroms - sim_chrom  # (T, 3, N)
+                any_nan = np.any(np.isnan(diff_3d), axis=1)  # (T, N)
+                sq_err = np.sum(diff_3d ** 2, axis=1)  # (T, N)
+                sq_err[any_nan] = np.nan
+                rep_mses.append(float(np.nanmean(sq_err)))
+            path_mse[held_out_index] = float(np.mean(rep_mses))
+
+            # Ensemble-mean metric: average simulated positions across reps,
+            # then compare to reality.  Cancels model-side stochastic variance.
+            # Use explicit sum/count to avoid warnings on all-NaN slices
+            # (e.g. chromosomes missing at t=0 that stay NaN in every rep).
+            stacked = np.stack(sim_chroms, axis=0)  # (n_reps, T, 3, N)
+            ens_sum = np.nansum(stacked, axis=0)
+            ens_count = np.sum(np.isfinite(stacked), axis=0)
+            safe_count = np.where(ens_count > 0, ens_count, 1.0)
+            ens_mean_chroms = np.where(
+                ens_count > 0, ens_sum / safe_count, np.nan,
+            )  # (T, 3, N)
+            ens_diff = real_chroms - ens_mean_chroms
+            ens_sq = np.sum(ens_diff ** 2, axis=1)
+            ens_sq[np.any(np.isnan(ens_diff), axis=1)] = np.nan
+            ensemble_mse[held_out_index] = float(np.nanmean(ens_sq))
+
+            # Spindle-frame diagnostics
+            sim_axial_mean = np.nanmean(
+                np.stack([np.nanmean(sf.axial, axis=1) for sf in sim_rollouts], axis=0),
+                axis=0,
             )
-            _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
-            sim_chroms.append(sim_cell.chromosomes)
-            sim_rollouts.append(spindle_frame(sim_cell))
-
-        # Primary metric: per-chromosome 3D MSE, computed per replicate then
-        # averaged.  Each rep's MSE includes both drift bias and stochastic
-        # variance, so the mean is the expected single-rollout error.
-        real_chroms = test_cell.chromosomes  # (T, 3, N)
-        rep_mses = []
-        for sim_chrom in sim_chroms:
-            diff_3d = real_chroms - sim_chrom  # (T, 3, N)
-            any_nan = np.any(np.isnan(diff_3d), axis=1)  # (T, N)
-            sq_err = np.sum(diff_3d ** 2, axis=1)  # (T, N)
-            sq_err[any_nan] = np.nan
-            rep_mses.append(float(np.nanmean(sq_err)))
-        path_mse[held_out_index] = float(np.mean(rep_mses))
-
-        # Spindle-frame diagnostics
-        sim_axial_mean = np.nanmean(
-            np.stack([np.nanmean(sf.axial, axis=1) for sf in sim_rollouts], axis=0),
-            axis=0,
-        )
-        sim_radial_mean = np.nanmean(
-            np.stack([np.nanmean(sf.radial, axis=1) for sf in sim_rollouts], axis=0),
-            axis=0,
-        )
-
-        axial_mse[held_out_index] = float(
-            np.nanmean((real_axial_mean - sim_axial_mean) ** 2)
-        )
-        radial_mse[held_out_index] = float(
-            np.nanmean((real_radial_mean - sim_radial_mean) ** 2)
-        )
-        endpoint_mean_error[held_out_index] = float(
-            (real_axial_mean[-1] - sim_axial_mean[-1]) ** 2
-            + (real_radial_mean[-1] - sim_radial_mean[-1]) ** 2
-        )
-
-        # Final-frame distributional comparison (pool all rollouts)
-        real_ax_valid = real_sf.axial[-1]
-        real_ax_valid = real_ax_valid[np.isfinite(real_ax_valid)]
-        real_rad_valid = real_sf.radial[-1]
-        real_rad_valid = real_rad_valid[np.isfinite(real_rad_valid)]
-        sim_ax_valid = np.concatenate(
-            [sf.axial[-1][np.isfinite(sf.axial[-1])] for sf in sim_rollouts]
-        )
-        sim_rad_valid = np.concatenate(
-            [sf.radial[-1][np.isfinite(sf.radial[-1])] for sf in sim_rollouts]
-        )
-
-        if real_ax_valid.size > 0 and sim_ax_valid.size > 0:
-            final_axial_wasserstein[held_out_index] = float(
-                stats.wasserstein_distance(real_ax_valid, sim_ax_valid)
-            )
-        if real_rad_valid.size > 0 and sim_rad_valid.size > 0:
-            final_radial_wasserstein[held_out_index] = float(
-                stats.wasserstein_distance(real_rad_valid, sim_rad_valid)
+            sim_radial_mean = np.nanmean(
+                np.stack([np.nanmean(sf.radial, axis=1) for sf in sim_rollouts], axis=0),
+                axis=0,
             )
 
-        T = real_axial_mean.size
-        for horizon_index, horizon in enumerate(horizon_values):
-            if horizon >= T:
-                continue
-            horizon_errors[held_out_index, horizon_index] = float(
-                (real_axial_mean[horizon] - sim_axial_mean[horizon]) ** 2
-                + (real_radial_mean[horizon] - sim_radial_mean[horizon]) ** 2
+            axial_mse[held_out_index] = float(
+                np.nanmean((real_axial_mean - sim_axial_mean) ** 2)
             )
+            radial_mse[held_out_index] = float(
+                np.nanmean((real_radial_mean - sim_radial_mean) ** 2)
+            )
+            endpoint_mean_error[held_out_index] = float(
+                (real_axial_mean[-1] - sim_axial_mean[-1]) ** 2
+                + (real_radial_mean[-1] - sim_radial_mean[-1]) ** 2
+            )
+
+            # Final-frame distributional comparison (pool all rollouts)
+            real_ax_valid = real_sf.axial[-1]
+            real_ax_valid = real_ax_valid[np.isfinite(real_ax_valid)]
+            real_rad_valid = real_sf.radial[-1]
+            real_rad_valid = real_rad_valid[np.isfinite(real_rad_valid)]
+            sim_ax_valid = np.concatenate(
+                [sf.axial[-1][np.isfinite(sf.axial[-1])] for sf in sim_rollouts]
+            )
+            sim_rad_valid = np.concatenate(
+                [sf.radial[-1][np.isfinite(sf.radial[-1])] for sf in sim_rollouts]
+            )
+
+            if real_ax_valid.size > 0 and sim_ax_valid.size > 0:
+                final_axial_wasserstein[held_out_index] = float(
+                    stats.wasserstein_distance(real_ax_valid, sim_ax_valid)
+                )
+            if real_rad_valid.size > 0 and sim_rad_valid.size > 0:
+                final_radial_wasserstein[held_out_index] = float(
+                    stats.wasserstein_distance(real_rad_valid, sim_rad_valid)
+                )
+
+            T = real_axial_mean.size
+            for horizon_index, horizon in enumerate(horizon_values):
+                if horizon >= T:
+                    continue
+                horizon_errors[held_out_index, horizon_index] = float(
+                    (real_axial_mean[horizon] - sim_axial_mean[horizon]) ** 2
+                    + (real_radial_mean[horizon] - sim_radial_mean[horizon]) ** 2
+                )
 
     return RolloutCVResult(
         horizons=horizon_values,
         path_mse=path_mse,
+        ensemble_mse=ensemble_mse,
         axial_mse=axial_mse,
         radial_mse=radial_mse,
         endpoint_mean_error=endpoint_mean_error,

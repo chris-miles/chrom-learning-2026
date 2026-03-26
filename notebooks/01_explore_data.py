@@ -133,8 +133,9 @@ print(f"\n{n_short} cell(s) flagged with window < {MIN_FRAMES} frames "
 # Plot `|cos(angle_with_z)|` of the pole-pole axis vs frames after NEB for
 # every cell, grouped by condition.  Values near 1 mean the spindle is aligned
 # with the optical axis (vertical); near 0 means horizontal (in the imaging
-# plane).  Cells with anomalously high z-alignment should be considered for
-# exclusion (e.g. rpe18_ctr_503 was moved to `data/excluded_horizontal/`).
+# plane).  Cells with anomalous spindle geometry can be moved out of the
+# top-level `data/` directory for exclusion (e.g. `rpe18_ctr_503` to
+# `data/excluded_horizontal/`, `rpe18_ctr_507` to `data/excluded_outlier/`).
 
 # %%
 cond_names = [c for c in CONDITIONS if load_condition(c)]  # skip empty conditions
