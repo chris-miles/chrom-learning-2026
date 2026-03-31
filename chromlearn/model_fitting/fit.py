@@ -66,6 +66,12 @@ class RolloutCVResult:
     leaving drift bias plus a topology-invariant data-noise floor.  It is
     a conditional-mean trajectory score (not a full distributional SDE
     criterion), appropriate when the goal is topology/drift selection.
+
+    ``horizon_path_mse`` and ``horizon_ensemble_mse`` are the horizon-resolved
+    versions of ``path_mse`` and ``ensemble_mse``, both shape
+    ``(n_cells, n_horizons)``.  These show how the two error types grow with
+    forecast horizon: path MSE saturates quickly at the diffusion noise floor,
+    while ensemble MSE grows more slowly and remains discriminative.
     """
 
     horizons: np.ndarray
@@ -77,6 +83,8 @@ class RolloutCVResult:
     final_axial_wasserstein: np.ndarray
     final_radial_wasserstein: np.ndarray
     horizon_errors: np.ndarray
+    horizon_path_mse: np.ndarray
+    horizon_ensemble_mse: np.ndarray
 
 
 def _block_roughness(R_xx: np.ndarray | None, R_xy: np.ndarray) -> np.ndarray:
@@ -211,6 +219,7 @@ def bootstrap_kernels(
             sampled_cells, basis_xx, basis_xy,
             basis_eval_mode=config.basis_eval_mode,
             topology=config.topology,
+            r_cutoff_xx=config.r_cutoff_xx,
         )
         theta_samples[boot_index] = fit_kernels(
             G, V,
@@ -276,6 +285,7 @@ def cross_validate(
             train_cells, basis_xx, basis_xy,
             basis_eval_mode=config.basis_eval_mode,
             topology=config.topology,
+            r_cutoff_xx=config.r_cutoff_xx,
         )
         if G_train.size == 0:
             continue
@@ -294,6 +304,7 @@ def cross_validate(
                 test_cells, basis_xx, basis_xy,
                 basis_eval_mode=config.basis_eval_mode,
                 topology=config.topology,
+                r_cutoff_xx=config.r_cutoff_xx,
             )
             if G_test.size == 0:
                 continue
@@ -365,6 +376,8 @@ def rollout_cross_validate(
     final_axial_wasserstein = np.full(n_cells, np.nan, dtype=np.float64)
     final_radial_wasserstein = np.full(n_cells, np.nan, dtype=np.float64)
     horizon_errors = np.full((n_cells, horizon_values.size), np.nan, dtype=np.float64)
+    horizon_path_mse = np.full((n_cells, horizon_values.size), np.nan, dtype=np.float64)
+    horizon_ensemble_mse = np.full((n_cells, horizon_values.size), np.nan, dtype=np.float64)
 
     fold_set: set[int]
     for fold_indices in folds:
@@ -468,6 +481,25 @@ def rollout_cross_validate(
                     + (real_radial_mean[horizon] - sim_radial_mean[horizon]) ** 2
                 )
 
+                # Horizon-resolved ensemble MSE (3D position space)
+                ens_diff_h = real_chroms[horizon] - ens_mean_chroms[horizon]  # (3, N)
+                ens_sq_h = np.sum(ens_diff_h ** 2, axis=0)  # (N,)
+                ens_sq_h[np.any(np.isnan(ens_diff_h), axis=0)] = np.nan
+                horizon_ensemble_mse[held_out_index, horizon_index] = float(
+                    np.nanmean(ens_sq_h)
+                )
+
+                # Horizon-resolved path MSE (average across reps)
+                rep_h_mses = []
+                for sim_chrom in sim_chroms:
+                    diff_h = real_chroms[horizon] - sim_chrom[horizon]  # (3, N)
+                    sq_h = np.sum(diff_h ** 2, axis=0)  # (N,)
+                    sq_h[np.any(np.isnan(diff_h), axis=0)] = np.nan
+                    rep_h_mses.append(float(np.nanmean(sq_h)))
+                horizon_path_mse[held_out_index, horizon_index] = float(
+                    np.mean(rep_h_mses)
+                )
+
     return RolloutCVResult(
         horizons=horizon_values,
         path_mse=path_mse,
@@ -478,6 +510,8 @@ def rollout_cross_validate(
         final_axial_wasserstein=final_axial_wasserstein,
         final_radial_wasserstein=final_radial_wasserstein,
         horizon_errors=horizon_errors,
+        horizon_path_mse=horizon_path_mse,
+        horizon_ensemble_mse=horizon_ensemble_mse,
     )
 
 
@@ -516,6 +550,7 @@ def fit_model(
         cells, basis_xx, basis_xy,
         basis_eval_mode=config.basis_eval_mode,
         topology=config.topology,
+        r_cutoff_xx=config.r_cutoff_xx,
     )
     R_xx = basis_xx.roughness_matrix() if basis_xx is not None else None
     roughness = _block_roughness(R_xx, basis_xy.roughness_matrix())
@@ -572,6 +607,7 @@ def fit_model(
         metadata={"n_cells": len(cells)},
         diffusion_model=diffusion_model,
         topology=config.topology,
+        r_cutoff_xx=config.r_cutoff_xx,
     )
 
 

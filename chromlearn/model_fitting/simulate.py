@@ -100,15 +100,23 @@ def kernel_callables(model):
 
     Returns:
         ``(kernel_xx, kernel_xy)`` — ``kernel_xx`` is ``None`` when the model
-        has no chromosome-chromosome basis.
+        has no chromosome-chromosome basis.  If the model has ``r_cutoff_xx``,
+        the xx kernel returns zero for distances above the cutoff.
     """
     def kernel_xy(r: np.ndarray) -> np.ndarray:
         return model.evaluate_kernel("xy", r)
 
     kernel_xx = None
     if model.basis_xx is not None:
-        def kernel_xx(r: np.ndarray) -> np.ndarray:
-            return model.evaluate_kernel("xx", r)
+        cutoff = getattr(model, "r_cutoff_xx", None)
+        if cutoff is not None:
+            def kernel_xx(r: np.ndarray) -> np.ndarray:
+                result = model.evaluate_kernel("xx", r)
+                result[r > cutoff] = 0.0
+                return result
+        else:
+            def kernel_xx(r: np.ndarray) -> np.ndarray:
+                return model.evaluate_kernel("xx", r)
 
     return kernel_xx, kernel_xy
 

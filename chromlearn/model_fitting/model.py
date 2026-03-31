@@ -22,6 +22,7 @@ class FittedModel:
     metadata: dict | None = None
     diffusion_model: DiffusionResult | None = None
     topology: str = "poles"
+    r_cutoff_xx: float | None = None
 
     @property
     def theta_xx(self) -> np.ndarray:

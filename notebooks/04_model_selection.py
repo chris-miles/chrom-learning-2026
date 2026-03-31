@@ -7,8 +7,9 @@
 # |---|---|---|
 # | **poles** | both poles (2 partners) | no |
 # | **center** | pole midpoint (1 partner) | no |
-# | **poles\_and\_chroms** | both poles | yes |
-# | **center\_and\_chroms** | pole midpoint | yes |
+# | **poles\_and\_chroms** | both poles | yes (full range) |
+# | **center\_and\_chroms** | pole midpoint | yes (full range) |
+# | **poles\_and\_chroms\_short** | both poles | yes (r < 2.5 um only) |
 #
 # Primary selection criterion: leave-one-cell-out ensemble-mean MSE
 # (simulated positions averaged across replicates before comparing to
@@ -81,10 +82,19 @@ for c in cells:
 # Empirical distance distributions are plotted below as a sanity check.
 
 # %%
-TOPOLOGIES = ["poles", "center", "poles_and_chroms", "center_and_chroms"]
+TOPOLOGIES = ["poles", "center", "poles_and_chroms", "center_and_chroms",
+              "poles_and_chroms_short"]
 
 R_MIN = 0.3   # um — tracking resolution floor
 R_MAX = 15.0  # um — conservative spindle-scale upper bound
+R_CUTOFF_XX_SHORT = 2.5  # um — short-range-only xx cutoff
+
+
+def _base_topology(label: str) -> str:
+    """Map extended topology labels to the base topology string."""
+    if label == "poles_and_chroms_short":
+        return "poles_and_chroms"
+    return label
 
 r_min_xx = R_MIN
 r_max_xx = R_MAX
@@ -118,7 +128,7 @@ for cell in cells:
                     xx_dists_all.append(d)
 
     for topology in TOPOLOGIES:
-        partners = get_partners(cell, topology)  # (n_p, T, 3)
+        partners = get_partners(cell, _base_topology(topology))  # (n_p, T, 3)
         for t in range(T):
             pos_t = chroms[t].T  # (N, 3)
             for p_idx in range(partners.shape[0]):
@@ -139,7 +149,10 @@ for t in TOPOLOGIES:
           f"(observed range: {np.min(arr):.2f} – {np.max(arr):.2f} um)")
 
 # %%
-fig, axes = plt.subplots(1, 5, figsize=(18, 4))
+# Only plot unique xy partner sets (poles_and_chroms_short shares partners
+# with poles_and_chroms, so skip its duplicate histogram).
+_HIST_TOPOLOGIES = [t for t in TOPOLOGIES if t != "poles_and_chroms_short"]
+fig, axes = plt.subplots(1, 1 + len(_HIST_TOPOLOGIES), figsize=(18, 4))
 
 axes[0].hist(xx_dists_all, bins=60, color="C2", edgecolor="k", alpha=0.7)
 axes[0].axvline(R_MIN, color="r", linestyle="--", linewidth=1.5, label=f"r_min={R_MIN}")
@@ -149,7 +162,7 @@ axes[0].set_xlabel("Distance (um)")
 axes[0].set_ylabel("Count")
 axes[0].legend(fontsize=7)
 
-for idx, topology in enumerate(TOPOLOGIES):
+for idx, topology in enumerate(_HIST_TOPOLOGIES):
     ax = axes[idx + 1]
     ax.hist(xy_dists_by_topology[topology], bins=60, color=f"C{idx}", edgecolor="k", alpha=0.7)
     ax.axvline(R_MIN, color="r", linestyle="--", linewidth=1.5, label=f"r_min={R_MIN}")
@@ -180,8 +193,9 @@ LAMBDA_ROUGH = 1.0
 
 configs: dict[str, FitConfig] = {}
 for topology in TOPOLOGIES:
+    r_cutoff = R_CUTOFF_XX_SHORT if topology == "poles_and_chroms_short" else None
     configs[topology] = FitConfig(
-        topology=topology,
+        topology=_base_topology(topology),
         n_basis_xx=N_BASIS,
         n_basis_xy=N_BASIS,
         r_min_xx=R_MIN,
@@ -195,6 +209,7 @@ for topology in TOPOLOGIES:
         endpoint_method="neb_ao_frac",
         endpoint_frac=BASE_FRAC,
         dt=5.0,
+        r_cutoff_xx=r_cutoff,
     )
 
 print("Fitting models...")
@@ -208,7 +223,7 @@ for topology in TOPOLOGIES:
 # %% [markdown]
 # ## Cross-validation comparison
 #
-# Leave-one-cell-out CV: fit on 12 cells, evaluate mean squared error on the
+# Leave-one-cell-out CV: fit on N-1 cells, evaluate mean squared error on the
 # held-out cell.  Lower is better.
 #
 # **Secondary short-horizon diagnostic**: leave-one-cell-out one-step velocity
@@ -217,7 +232,7 @@ for topology in TOPOLOGIES:
 # topologies are meaningful.
 
 # %%
-print("Running leave-one-cell-out cross-validation (4 topologies × 13 folds)...")
+print(f"Running leave-one-cell-out cross-validation (4 topologies × {len(cells)} folds)...")
 cv_results: dict[str, CVResult] = {}
 for topology in TOPOLOGIES:
     cv_results[topology] = cross_validate(cells, configs[topology])
@@ -326,7 +341,7 @@ print("So the primary CV score is sensible, but in this dataset it only weakly s
 # N cell-level resamples per topology; shaded band = 5–95% quantile interval.
 
 # %%
-N_BOOT = 20
+N_BOOT = 200
 boot_rng = np.random.default_rng(42)
 
 print(f"Bootstrapping kernels ({N_BOOT} resamples × 4 topologies)...")
@@ -361,7 +376,7 @@ for topology in TOPOLOGIES:
 # We flag any model where f_xx at r < 1.5 um becomes positive.
 
 # %%
-chroms_topologies = [t for t in TOPOLOGIES if t in ("poles_and_chroms", "center_and_chroms")]
+chroms_topologies = [t for t in TOPOLOGIES if "chroms" in t]
 r_probe = np.linspace(r_min_xx, r_max_xx, 400)
 SHORT_R_THRESHOLD = 1.5  # um — below this we expect repulsion, not attraction
 
@@ -472,8 +487,8 @@ sf_real = spindle_frame(example_cell)
 
 QUAL_CELL_IDXS = sorted({0, len(cells) // 2, len(cells) - 1})
 QUAL_N_TRACES = 6
-ROLLOUT_REPS = 50
-ROLLOUT_HORIZONS = (1, 5, 10, 20)
+ROLLOUT_REPS = 32
+ROLLOUT_HORIZONS = (1, 3, 5, 8, 10, 15, 20)
 
 
 def _simulate_cell_once(cell: TrimmedCell, model: FittedModel, seed: int):
@@ -665,14 +680,16 @@ plt.show()
 # %%
 print("Running leave-one-cell-out rollout validation "
       f"({len(TOPOLOGIES)} topologies × {len(cells)} folds × {ROLLOUT_REPS} rollout replicates)...")
+print("  (common random numbers across topologies for paired comparison)")
 rollout_results: dict[str, RolloutCVResult] = {}
+ROLLOUT_SEED = 200
 for topo_index, topology in enumerate(TOPOLOGIES):
     rollout_results[topology] = rollout_cross_validate(
         cells,
         configs[topology],
         n_reps=ROLLOUT_REPS,
         horizons=ROLLOUT_HORIZONS,
-        rng=np.random.default_rng(200 + topo_index),
+        rng=np.random.default_rng(ROLLOUT_SEED),
     )
     rr = rollout_results[topology]
     print(f"  {topology:<22}  ens_MSE={np.nanmean(rr.ensemble_mse):.5f}  "
@@ -786,6 +803,111 @@ for topology in sorted_topo_rollout:
 
 
 # %% [markdown]
+# ## Metric concordance
+#
+# Do the different metrics agree on topology ranking?  We check two things:
+#
+# 1. **Rank concordance table**: topology ordering under each metric.
+# 2. **Horizon-resolved path MSE vs ensemble MSE**: path MSE saturates at the
+#    diffusion noise floor within a few frames, while ensemble MSE grows more
+#    slowly and remains discriminative between topologies at longer horizons.
+#    The gap between the two curves is the per-realization diffusion variance.
+
+# %%
+# Rank concordance table
+metric_rankings: dict[str, list[str]] = {}
+metric_rankings["Ensemble MSE"] = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
+metric_rankings["Path MSE"] = sorted(TOPOLOGIES, key=lambda t: rollout_mse_score[t])
+metric_rankings["1-step CV"] = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
+metric_rankings["Endpoint"] = sorted(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
+metric_rankings["W1 (final)"] = sorted(TOPOLOGIES, key=lambda t: rollout_dist_score[t])
+
+print("Metric concordance — topology ranking under each criterion")
+print("=" * 90)
+header = f"{'Metric':<16}" + "".join(f"  {'#' + str(i+1):<20}" for i in range(len(TOPOLOGIES)))
+print(header)
+print("-" * 90)
+for metric_name, ranking in metric_rankings.items():
+    row = f"  {metric_name:<16}" + "".join(f"  {t:<20}" for t in ranking)
+    print(row)
+print("=" * 90)
+
+# Check if all metrics agree on rank-1
+rank1_topologies = {r[0] for r in metric_rankings.values()}
+if len(rank1_topologies) == 1:
+    print(f"All metrics agree: {rank1_topologies.pop()} is best.")
+else:
+    print(f"Rank-1 picks: {', '.join(f'{m}: {r[0]}' for m, r in metric_rankings.items())}")
+
+# %%
+# Horizon-resolved path MSE vs ensemble MSE
+fig_hz, axes_hz = plt.subplots(1, 2, figsize=(14, 5))
+
+horizons_frames = rollout_results[TOPOLOGIES[0]].horizons
+dt = cells[0].dt
+
+for topo_idx, topology in enumerate(TOPOLOGIES):
+    rr = rollout_results[topology]
+    hz_ens = np.nanmean(rr.horizon_ensemble_mse, axis=0)
+    hz_path = np.nanmean(rr.horizon_path_mse, axis=0)
+
+    axes_hz[0].plot(
+        horizons_frames * dt, hz_ens,
+        marker="o", linewidth=1.8, label=topology,
+    )
+    axes_hz[1].plot(
+        horizons_frames * dt, hz_path,
+        marker="s", linewidth=1.8, label=topology,
+    )
+
+axes_hz[0].set_xlabel("Forecast horizon (s)")
+axes_hz[0].set_ylabel("3D position MSE (um²)")
+axes_hz[0].set_title("Ensemble-mean MSE vs horizon\n(drift bias only — discriminative)")
+axes_hz[0].legend(fontsize=8)
+
+axes_hz[1].set_xlabel("Forecast horizon (s)")
+axes_hz[1].set_ylabel("3D position MSE (um²)")
+axes_hz[1].set_title("Per-realization path MSE vs horizon\n(drift + diffusion noise — less discriminative)")
+axes_hz[1].legend(fontsize=8)
+
+fig_hz.suptitle("Horizon-resolved comparison: ensemble MSE isolates drift signal")
+fig_hz.tight_layout()
+plt.show()
+
+# %%
+# Overlay: both metrics for one topology to show the gap
+ref_topo = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])[0]
+rr_ref = rollout_results[ref_topo]
+hz_ens_ref = np.nanmean(rr_ref.horizon_ensemble_mse, axis=0)
+hz_path_ref = np.nanmean(rr_ref.horizon_path_mse, axis=0)
+
+fig_gap, ax_gap = plt.subplots(figsize=(8, 5))
+ax_gap.plot(horizons_frames * dt, hz_ens_ref, "o-", linewidth=2, color="C0",
+            label=f"Ensemble MSE ({ref_topo})")
+ax_gap.plot(horizons_frames * dt, hz_path_ref, "s--", linewidth=2, color="C1",
+            label=f"Path MSE ({ref_topo})")
+ax_gap.fill_between(
+    horizons_frames * dt, hz_ens_ref, hz_path_ref,
+    alpha=0.15, color="C3", label="Diffusion noise floor",
+)
+ax_gap.set_xlabel("Forecast horizon (s)")
+ax_gap.set_ylabel("3D position MSE (um²)")
+ax_gap.set_title(
+    "Path MSE vs ensemble MSE — the gap is diffusion variance\n"
+    "Ensemble MSE removes this topology-invariant noise, isolating drift error"
+)
+ax_gap.legend(fontsize=9)
+fig_gap.tight_layout()
+plt.show()
+
+noise_ratio = hz_path_ref[-1] / hz_ens_ref[-1] if hz_ens_ref[-1] > 0 else np.nan
+print(f"At horizon {horizons_frames[-1]} frames ({horizons_frames[-1] * dt:.0f}s):")
+print(f"  Path MSE / Ensemble MSE = {noise_ratio:.1f}x")
+print(f"  ~{100*(1 - 1/noise_ratio):.0f}% of path MSE is diffusion noise, "
+      "topology-invariant and non-discriminative.")
+
+
+# %% [markdown]
 # ## Model selection summary
 #
 # **Primary criterion**: leave-one-cell-out ensemble-mean MSE (simulated
@@ -826,6 +948,22 @@ print("=" * 115)
 print(f"  Primary rollout selector: {best_rollout_topo}")
 print("  Path MSE, endpoint, and W1 are reported separately as supporting diagnostics.")
 
+# Paired foldwise differences for rollout ensemble MSE
+ref_ens = rollout_results[best_rollout_topo].ensemble_mse
+print(f"\nPaired foldwise differences in ensemble MSE (reference: {best_rollout_topo})")
+print(f"  {'Topology':<22} {'Ens MSE':>12} {'Δ vs best':>12} {'SE(Δ)':>12} {'Δ/SE(Δ)':>10} {'Significant?':>14}")
+for topology in sorted_topo_rollout:
+    rr = rollout_results[topology]
+    diff = rr.ensemble_mse - ref_ens
+    valid = np.isfinite(diff)
+    n = int(valid.sum())
+    mean_diff = float(np.mean(diff[valid])) if n > 0 else np.inf
+    se_diff = float(np.std(diff[valid], ddof=1) / np.sqrt(n)) if n > 1 else np.inf
+    ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
+    sig = "—" if topology == best_rollout_topo else ("yes" if abs(ratio) > 2.0 else "no")
+    print(f"  {topology:<22} {rollout_ensemble_mse_score[topology]:>12.4f} "
+          f"{mean_diff:>+12.4e} {se_diff:>12.4e} {ratio:>10.2f} {sig:>14}")
+
 print("\nSecondary diagnostic: leave-one-cell-out 1-step velocity MSE")
 print(f"  {'Topology':<22} {'CV MSE':>12} {'vs null':>9} {'SE':>10} {'Δ vs best':>10} {'SE(Δ)':>10} {'Δ/SE(Δ)':>8}")
 for topology in sorted_topo:
@@ -852,15 +990,32 @@ if best_mean_topo == best_rollout_topo:
 else:
     print("  The rollout selector and the 1-step diagnostic do not agree.")
     print("  The 1-step CV gap is small, while rollout is more discriminative on long-horizon behavior.")
+
+# Parsimony note: if the gap between the simplest plausible model and the
+# winner is within ~1 SE, prefer the simpler model.
+simplest_topo = "poles"  # fewest parameters: no xx term, no midpoint
+if best_rollout_topo != simplest_topo:
+    diff_simp = rollout_results[simplest_topo].ensemble_mse - ref_ens
+    valid_simp = np.isfinite(diff_simp)
+    n_simp = int(valid_simp.sum())
+    mean_simp = float(np.mean(diff_simp[valid_simp])) if n_simp > 0 else np.inf
+    se_simp = float(np.std(diff_simp[valid_simp], ddof=1) / np.sqrt(n_simp)) if n_simp > 1 else np.inf
+    ratio_simp = mean_simp / se_simp if se_simp > 0 and se_simp < np.inf else 0.0
+    if abs(ratio_simp) < 1.0:
+        print(f"\n  Parsimony note: {simplest_topo} is within 1 SE of {best_rollout_topo} "
+              f"(Δ/SE = {ratio_simp:.2f}). The simpler model is not significantly worse.")
+    elif abs(ratio_simp) < 2.0:
+        print(f"\n  Parsimony note: {simplest_topo} is between 1-2 SE of {best_rollout_topo} "
+              f"(Δ/SE = {ratio_simp:.2f}). The gap is suggestive but not definitive.")
+    else:
+        print(f"\n  Parsimony note: {simplest_topo} is >2 SE worse than {best_rollout_topo} "
+              f"(Δ/SE = {ratio_simp:.2f}). The more complex model is justified.")
 print("=" * 105)
 
 best_topology = best_rollout_topo
-print("\nMethodological note: topology selection uses the raw minimum of mean")
-print("LOOCV ensemble MSE across a small set of physically motivated topologies.")
-print("With only ~5 candidates this is unlikely to overfit, but the selection")
-print("does not include a formal paired-difference calibration rule (e.g.,")
-print("one-SE rule). The ± SE values above provide informal guidance; if the")
-print("gap between top candidates is within ~1 SE, the ranking is not definitive.")
+print(f"\nWith only {len(TOPOLOGIES)} candidates, selection-level overfitting is unlikely.")
+print("If the gap between top candidates is within ~1 SE, the ranking is not definitive;")
+print("in that case, prefer the simpler (fewer-parameter) model.")
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")

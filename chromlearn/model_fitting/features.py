@@ -11,6 +11,7 @@ def build_design_matrix(
     basis_xy,
     basis_eval_mode: str = "ito",
     topology: str = "poles",
+    r_cutoff_xx: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build the stacked regression design matrix and velocity response.
 
@@ -32,6 +33,9 @@ def build_design_matrix(
         * ``"strato"`` -- Evaluate basis at the midpoint ``(X(t) + X(t+1)) / 2``.
     topology : str, default ``"poles"``
         Interaction topology — controls which partner positions are used.
+    r_cutoff_xx : float or None
+        If not None, zero out chromosome-chromosome interactions for
+        distances above this cutoff.
     """
     from chromlearn.io.trajectory import get_partners
 
@@ -48,6 +52,7 @@ def build_design_matrix(
         partners = get_partners(cell, topology)
         G_cell, V_cell = _build_cell_design_matrix(
             cell, partners, basis_xx, basis_xy, basis_eval_mode,
+            r_cutoff_xx=r_cutoff_xx,
         )
         if G_cell.size > 0:
             all_G.append(G_cell)
@@ -67,6 +72,7 @@ def _build_cell_design_matrix(
     basis_xx,
     basis_xy,
     basis_eval_mode: str,
+    r_cutoff_xx: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Vectorized design matrix construction for a single cell.
 
@@ -76,6 +82,8 @@ def _build_cell_design_matrix(
         Shape ``(n_partners, T, 3)`` — external interaction partner trajectories.
     basis_xx : Basis or None
         ``None`` to skip chromosome-chromosome interactions.
+    r_cutoff_xx : float or None
+        If not None, zero out xx interactions for distances above this cutoff.
     """
     chromosomes = cell.chromosomes
     T = chromosomes.shape[0]
@@ -126,12 +134,15 @@ def _build_cell_design_matrix(
             delta_xx = eval_chroms[np.newaxis, :, :] - eval_valid[:, np.newaxis, :]
             dist_xx = np.linalg.norm(delta_xx, axis=2)  # (n_valid, N)
 
-            # Mask: skip self-pairs, NaN neighbors, and zero distances
+            # Mask: skip self-pairs, NaN neighbors, zero distances,
+            # and distances beyond the xx cutoff (if set).
             neighbor_valid = ~np.any(np.isnan(eval_chroms), axis=1)  # (N,)
             pair_mask = np.ones((n_valid, N), dtype=bool)
             pair_mask[np.arange(n_valid), valid_idx] = False  # exclude self
             pair_mask[:, ~neighbor_valid] = False
             pair_mask &= dist_xx > 1e-12
+            if r_cutoff_xx is not None:
+                pair_mask &= dist_xx <= r_cutoff_xx
 
             # Unit directions where valid, zero elsewhere
             safe_dist = np.where(pair_mask, dist_xx, 1.0)

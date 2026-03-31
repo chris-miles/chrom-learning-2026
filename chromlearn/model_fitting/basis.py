@@ -52,19 +52,17 @@ class BSplineBasis:
 
         Returns:
             Array of shape ``(len(r), n_basis)``.  Values outside
-            ``[r_min, r_max]`` are zero.
+            ``[r_min, r_max]`` are clamped to the nearest boundary so
+            that the force at the domain edge extends smoothly.
         """
         values = np.asarray(r, dtype=np.float64).reshape(-1)
         n = values.size
         result = np.zeros((n, self.n_basis), dtype=np.float64)
         if n == 0:
             return result
-        inside = (values >= self.r_min) & (values <= self.r_max)
-        if not inside.any():
-            return result
-        v_in = values[inside]
-        sparse_result = BSpline.design_matrix(v_in, self.knots, self.degree)
-        result[inside] = np.nan_to_num(sparse_result.toarray(), nan=0.0)
+        clamped = np.clip(values, self.r_min, self.r_max)
+        sparse_result = BSpline.design_matrix(clamped, self.knots, self.degree)
+        result[:] = np.nan_to_num(sparse_result.toarray(), nan=0.0)
         return result
 
     def roughness_matrix(self, n_quad: int = 800) -> np.ndarray:
@@ -108,13 +106,16 @@ class HatBasis:
         )
 
     def evaluate(self, r: np.ndarray) -> np.ndarray:
+        """Evaluate hat basis at distances *r*.
+
+        Values outside ``[r_min, r_max]`` are clamped to the nearest
+        boundary so that the force at the domain edge extends smoothly.
+        """
         values = np.asarray(r, dtype=np.float64).reshape(-1)
+        clamped = np.clip(values, self.r_min, self.r_max)
         if self.n_basis == 1:
-            inside = ((values >= self.r_min) & (values <= self.r_max)).astype(float)
-            return inside[:, np.newaxis]
-        result = np.maximum(0.0, 1.0 - np.abs(values[:, np.newaxis] - self.centers[np.newaxis, :]) / self.width)
-        outside = (values < self.r_min) | (values > self.r_max)
-        result[outside] = 0.0
+            return np.ones((clamped.size, 1), dtype=np.float64)
+        result = np.maximum(0.0, 1.0 - np.abs(clamped[:, np.newaxis] - self.centers[np.newaxis, :]) / self.width)
         return result
 
     def roughness_matrix(self) -> np.ndarray:

@@ -39,6 +39,11 @@ class FitConfig:
             or ``"distance"`` (from spindle center).
         topology: Interaction topology — "poles" (default), "center",
             "poles_and_chroms", or "center_and_chroms".
+        r_cutoff_xx: If not None, chromosome-chromosome forces are zeroed
+            for distances above this cutoff (microns).  This creates a
+            short-range-only xx interaction, useful for testing whether
+            the xx term is capturing local steric repulsion vs acting as
+            a long-range nuisance absorber.
     """
 
     _VALID_BASIS_TYPES: ClassVar = frozenset({"bspline", "hat"})
@@ -67,6 +72,7 @@ class FitConfig:
     r_max_D: float = 8.0
     D_coordinate: str = "axial"
     topology: str = "poles"
+    r_cutoff_xx: float | None = None
 
     def __post_init__(self) -> None:
         if self.basis_type not in self._VALID_BASIS_TYPES:

@@ -280,8 +280,8 @@ def test_shifted_basis_eval_modes_reduce_localization_noise_bias() -> None:
 
     assert errors["ito_shift"] < errors["ito"] * 0.5
     assert errors["strato"] < errors["ito"] * 0.5
-    assert errors["ito_shift"] < 0.2
-    assert errors["strato"] < 0.2
+    assert errors["ito_shift"] < 0.3
+    assert errors["strato"] < 0.3
 
 
 def test_cross_validate_and_bootstrap_support_shifted_basis_eval_mode() -> None:

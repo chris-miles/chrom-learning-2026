@@ -19,10 +19,17 @@ class TestBSplineBasis:
         values = basis.evaluate(np.linspace(0, 10, 100))
         assert np.all(values >= -1e-15)
 
-    def test_outside_support_is_zero(self) -> None:
+    def test_outside_support_is_clamped(self) -> None:
         basis = BSplineBasis(r_min=1.0, r_max=5.0, n_basis=6)
-        values = basis.evaluate(np.array([0.0, 0.5, 5.5, 10.0]))
-        np.testing.assert_allclose(values, 0.0, atol=1e-15)
+        r_out = np.array([0.0, 0.5, 5.5, 10.0])
+        values = basis.evaluate(r_out)
+        # Out-of-domain values should clamp to the nearest boundary
+        at_min = basis.evaluate(np.array([1.0]))
+        at_max = basis.evaluate(np.array([5.0]))
+        np.testing.assert_allclose(values[0], at_min[0], atol=1e-15)
+        np.testing.assert_allclose(values[1], at_min[0], atol=1e-15)
+        np.testing.assert_allclose(values[2], at_max[0], atol=1e-15)
+        np.testing.assert_allclose(values[3], at_max[0], atol=1e-15)
 
     def test_roughness_matrix_shape(self) -> None:
         basis = BSplineBasis(r_min=0.0, r_max=10.0, n_basis=8)
