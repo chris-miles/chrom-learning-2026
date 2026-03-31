@@ -1,7 +1,7 @@
 # %% [markdown]
 # # 04 -- Model selection: which interaction topology fits best?
 #
-# We compare four chromosome interaction topologies:
+# We compare five chromosome interaction topologies:
 #
 # | Label | xy partner(s) | xx term? |
 # |---|---|---|
@@ -54,6 +54,7 @@ from chromlearn.model_fitting.fit import (
 from chromlearn.model_fitting.model import FittedModel
 from chromlearn.model_fitting.plotting import plot_cv_curve, plot_kernels
 from chromlearn.model_fitting.simulate import simulate_cell, simulate_trajectories
+from chromlearn.analysis.pca_projection import fit_pca_basis
 
 plt.rcParams["figure.dpi"] = 110
 
@@ -232,7 +233,7 @@ for topology in TOPOLOGIES:
 # topologies are meaningful.
 
 # %%
-print(f"Running leave-one-cell-out cross-validation (4 topologies × {len(cells)} folds)...")
+print(f"Running leave-one-cell-out cross-validation ({len(TOPOLOGIES)} topologies × {len(cells)} folds)...")
 cv_results: dict[str, CVResult] = {}
 for topology in TOPOLOGIES:
     cv_results[topology] = cross_validate(cells, configs[topology])
@@ -344,7 +345,7 @@ print("So the primary CV score is sensible, but in this dataset it only weakly s
 N_BOOT = 200
 boot_rng = np.random.default_rng(42)
 
-print(f"Bootstrapping kernels ({N_BOOT} resamples × 4 topologies)...")
+print(f"Bootstrapping kernels ({N_BOOT} resamples × {len(TOPOLOGIES)} topologies)...")
 boot_results: dict[str, BootstrapResult] = {}
 for topology in TOPOLOGIES:
     boot_results[topology] = bootstrap_kernels(
@@ -573,6 +574,98 @@ for cell_idx in QUAL_CELL_IDXS:
 
     fig.suptitle(f"Single-rollout qualitative check — {cell.cell_id}\n"
                  "Thin lines = representative chromosome traces, thick lines = means over all chromosomes")
+    fig.tight_layout()
+    plt.show()
+
+
+# %% [markdown]
+# ### Trajectories in PCA space: real vs rollout
+#
+# We project real and simulated trajectories into a common 2-component PCA
+# basis fitted from the **real** cell's combined pole + chromosome positions.
+# This gives a data-driven 3D→2D view where pole separation and chromosome
+# spread are both visible.  The same basis is used for both panels so
+# differences reflect the model, not the projection.
+
+# %%
+from matplotlib.collections import LineCollection
+
+
+def _colorline(ax, x, y, t, cmap, linewidth=1.5, alpha=1.0):
+    """Plot a line colored by scalar *t* (values in [0, 1])."""
+    points = np.column_stack([x, y]).reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    lc = LineCollection(segments, cmap=cmap, linewidths=linewidth, alpha=alpha)
+    lc.set_array(t[:-1])
+    ax.add_collection(lc)
+    return lc
+
+
+PCA_TOPOLOGIES = sorted_topo_cv[:2]
+PCA_N_CHROM_DISPLAY = 10
+
+for cell_idx in QUAL_CELL_IDXS[:2]:
+    cell = cells[cell_idx]
+    T_cell = cell.chromosomes.shape[0]
+    n_chrom = cell.chromosomes.shape[2]
+    t_color = np.linspace(0, 1, T_cell)
+
+    basis = fit_pca_basis(cell)
+
+    n_panels = 1 + len(PCA_TOPOLOGIES)
+    fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5.5), squeeze=False)
+
+    # Choose a spread of chromosomes to display (by initial radial position)
+    sf_real = spindle_frame(cell)
+    valid_chroms = np.flatnonzero(
+        np.all(np.isfinite(cell.chromosomes[:, :, :]), axis=(0, 1))
+    )
+    if valid_chroms.size > PCA_N_CHROM_DISPLAY:
+        radial0 = sf_real.radial[0, valid_chroms]
+        order = valid_chroms[np.argsort(radial0)]
+        display_chroms = order[np.linspace(0, order.size - 1, PCA_N_CHROM_DISPLAY, dtype=int)]
+    else:
+        display_chroms = valid_chroms
+
+    def _plot_pca_panel(ax, cell_data, title):
+        """Plot poles + chromosomes in PCA space on a single axis."""
+        # Poles: thick black
+        for p in range(cell_data.centrioles.shape[2]):
+            pole_pca = basis.project(cell_data.centrioles[:, :, p])
+            _colorline(ax, pole_pca[:, 0], pole_pca[:, 1], t_color,
+                        "Greys", linewidth=3, alpha=0.85)
+
+        # Chromosomes: thin colored lines
+        chrom_cmap = plt.cm.tab20(np.linspace(0, 1, max(len(display_chroms), 1)))
+        for ci, j in enumerate(display_chroms):
+            cj = cell_data.chromosomes[:, :, j]
+            if np.any(np.isnan(cj)):
+                continue
+            cj_pca = basis.project(cj)
+            ax.plot(cj_pca[:, 0], cj_pca[:, 1], color=chrom_cmap[ci],
+                    linewidth=0.6, alpha=0.4)
+            ax.plot(cj_pca[-1, 0], cj_pca[-1, 1], "o", color=chrom_cmap[ci],
+                    markersize=2.5, alpha=0.6)
+
+        ax.set_xlabel("PC1 (um)")
+        ax.set_ylabel("PC2 (um)")
+        ax.set_title(title, fontsize=10)
+        ax.set_aspect("equal")
+        ax.autoscale()
+
+    # Panel 0: real data
+    _plot_pca_panel(axes[0, 0], cell, f"Real — {cell.cell_id}")
+
+    # Panels 1+: rollouts from selected topologies
+    for ti, topology in enumerate(PCA_TOPOLOGIES):
+        sim_seed = 2000 + 100 * cell_idx + ti
+        _traj, sim_cell = _simulate_cell_once(cell, models[topology], seed=sim_seed)
+        _plot_pca_panel(axes[0, ti + 1], sim_cell, f"Rollout — {topology}")
+
+    fig.suptitle(f"Trajectories in PCA space — {cell.cell_id}\n"
+                 "Black = poles, colored = chromosomes (dot = endpoint), "
+                 "PCA basis from real data",
+                 fontsize=10)
     fig.tight_layout()
     plt.show()
 
@@ -1022,6 +1115,16 @@ print(f"\nFinal kernel plot for best model ({best_topology}):")
 fig = plot_kernels(models[best_topology], bootstrap=boot_results[best_topology])
 fig.suptitle(f"Best model kernels — {best_topology}", y=1.02)
 plt.show()
+
+# %% [markdown]
+# ## Scope of comparison
+#
+# The topologies above form a restricted, physically motivated candidate
+# family (pairwise SFI-inspired kernels with pole-geometry and optional
+# chromosome-chromosome terms).  The selection identifies the best model
+# *within this family*; it does not exhaust all plausible interaction
+# structures.  Extensions worth testing in future work include an explicit
+# common-transport / advection term and a `poles + center` hybrid topology.
 
 # %% [markdown]
 # ## Note on diffusion

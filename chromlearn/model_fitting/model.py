@@ -37,13 +37,17 @@ class FittedModel:
     def evaluate_kernel(self, kernel: str, r: np.ndarray) -> np.ndarray | None:
         """Evaluate a fitted kernel at distances *r*.
 
-        Returns ``None`` for ``"xx"`` when the model has no chromosome-chromosome basis.
+        For ``"xx"`` with ``r_cutoff_xx`` set, values at ``r > r_cutoff_xx``
+        are zeroed.  Returns ``None`` when the model has no xx basis.
         """
         values = np.asarray(r, dtype=np.float64)
         if kernel == "xx":
             if self.basis_xx is None:
                 return None
-            return self.basis_xx.evaluate(values) @ self.theta_xx
+            result = self.basis_xx.evaluate(values) @ self.theta_xx
+            if self.r_cutoff_xx is not None:
+                result[values > self.r_cutoff_xx] = 0.0
+            return result
         if kernel == "xy":
             return self.basis_xy.evaluate(values) @ self.theta_xy
         raise ValueError(f"Unknown kernel '{kernel}'. Use 'xx' or 'xy'.")
@@ -51,8 +55,8 @@ class FittedModel:
     def save(self, path: str | Path) -> None:
         """Save the model to an ``.npz`` file.
 
-        Persists theta, basis configurations, scalar D, metadata, topology, and
-        (if present) the variable-diffusion model.
+        Persists theta, basis configurations, scalar D, metadata, topology,
+        ``r_cutoff_xx``, and (if present) the variable-diffusion model.
         """
         output_path = Path(path)
         has_diffusion_model = self.diffusion_model is not None
@@ -82,6 +86,10 @@ class FittedModel:
                 "basis_xx_n_basis": self.basis_xx.n_basis,
             }
 
+        cutoff_payload = {}
+        if self.r_cutoff_xx is not None:
+            cutoff_payload["r_cutoff_xx"] = self.r_cutoff_xx
+
         np.savez(
             output_path,
             theta=self.theta,
@@ -97,6 +105,7 @@ class FittedModel:
             basis_xy_n_basis=self.basis_xy.n_basis,
             **basis_xx_payload,
             **diffusion_payload,
+            **cutoff_payload,
         )
 
     @classmethod
@@ -145,6 +154,12 @@ class FittedModel:
                 D_scalar=float(data["diffusion_D_scalar"]),
             )
 
+        r_cutoff_xx = None
+        if "r_cutoff_xx" in data:
+            val = float(data["r_cutoff_xx"])
+            if np.isfinite(val):
+                r_cutoff_xx = val
+
         return cls(
             theta=np.asarray(data["theta"], dtype=np.float64),
             n_basis_xx=n_basis_xx,
@@ -161,4 +176,5 @@ class FittedModel:
             metadata=metadata,
             diffusion_model=diffusion_model,
             topology=topology,
+            r_cutoff_xx=r_cutoff_xx,
         )

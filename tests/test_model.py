@@ -84,6 +84,68 @@ def test_save_load_no_xx(tmp_path):
     assert loaded.topology == "poles"
 
 
+def test_save_load_r_cutoff_xx(tmp_path):
+    """Round-trip save/load preserves r_cutoff_xx."""
+    basis_xx = HatBasis(0.0, 8.0, n_basis=4)
+    basis_xy = HatBasis(0.0, 10.0, n_basis=5)
+    model = FittedModel(
+        theta=np.arange(9, dtype=float),
+        n_basis_xx=4,
+        n_basis_xy=5,
+        basis_xx=basis_xx,
+        basis_xy=basis_xy,
+        D_x=0.4,
+        dt=5.0,
+        topology="poles_and_chroms",
+        r_cutoff_xx=2.5,
+    )
+    path = tmp_path / "model_cutoff.npz"
+    model.save(path)
+    loaded = FittedModel.load(path)
+    assert loaded.r_cutoff_xx == 2.5
+    assert loaded.topology == "poles_and_chroms"
+
+
+def test_save_load_r_cutoff_xx_none(tmp_path):
+    """Round-trip save/load with r_cutoff_xx=None (default)."""
+    basis_xy = HatBasis(0.0, 10.0, n_basis=5)
+    model = FittedModel(
+        theta=np.arange(5, dtype=float),
+        n_basis_xx=0,
+        n_basis_xy=5,
+        basis_xx=None,
+        basis_xy=basis_xy,
+        D_x=0.4,
+        dt=5.0,
+    )
+    path = tmp_path / "model_no_cutoff.npz"
+    model.save(path)
+    loaded = FittedModel.load(path)
+    assert loaded.r_cutoff_xx is None
+
+
+def test_evaluate_kernel_xx_respects_cutoff():
+    """evaluate_kernel('xx', r) returns zero above r_cutoff_xx."""
+    basis_xx = HatBasis(0.0, 8.0, n_basis=4)
+    basis_xy = HatBasis(0.0, 10.0, n_basis=5)
+    model = FittedModel(
+        theta=np.ones(9, dtype=float),
+        n_basis_xx=4,
+        n_basis_xy=5,
+        basis_xx=basis_xx,
+        basis_xy=basis_xy,
+        D_x=0.4,
+        dt=5.0,
+        r_cutoff_xx=2.5,
+    )
+    r = np.array([1.0, 2.0, 3.0, 5.0, 7.0])
+    result = model.evaluate_kernel("xx", r)
+    # Values at r <= 2.5 may be nonzero; values at r > 2.5 must be zero
+    assert np.all(result[r > 2.5] == 0.0)
+    # Sanity: at least one value below cutoff should be nonzero
+    assert np.any(result[r <= 2.5] != 0.0)
+
+
 def test_load_backward_compat_no_topology(tmp_path):
     """Loading old model files without topology field defaults to 'poles'."""
     np.savez(

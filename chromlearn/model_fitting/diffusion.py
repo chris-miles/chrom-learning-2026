@@ -94,6 +94,7 @@ def _predicted_force(
     basis_xx,
     basis_xy,
     topology: str = "poles",
+    r_cutoff_xx: float | None = None,
 ) -> np.ndarray:
     """Compute predicted force vectors at one timepoint for all chromosomes.
 
@@ -134,6 +135,8 @@ def _predicted_force(
                 dist = float(np.linalg.norm(delta))
                 if dist <= 1e-12:
                     continue
+                if r_cutoff_xx is not None and dist > r_cutoff_xx:
+                    continue
                 direction = delta / dist
                 phi = basis_xx.evaluate(np.array([dist]))[0]
                 force_vec += direction * (phi @ theta[:n_xx])
@@ -161,6 +164,7 @@ def local_diffusion_estimates(
     basis_xx=None,
     basis_xy=None,
     topology: str = "poles",
+    r_cutoff_xx: float | None = None,
 ) -> list[np.ndarray]:
     """Compute per-particle, per-timepoint local diffusion estimates.
 
@@ -246,7 +250,7 @@ def local_diffusion_estimates(
             dX_all = np.diff(chromosomes, axis=0)  # (T-1, 3, N)
             D = np.full((T - 1, N), np.nan, dtype=np.float64)
             for t in range(T - 1):
-                forces = _predicted_force(cell, t, fit_result, basis_xx, basis_xy, topology=topology)
+                forces = _predicted_force(cell, t, fit_result, basis_xx, basis_xy, topology=topology, r_cutoff_xx=r_cutoff_xx)
                 # forces: (N, 3), dX_all[t]: (3, N)
                 residual = dX_all[t] - (forces.T * dt)  # (3, N)
                 D[t] = np.sum(residual ** 2, axis=0) / (2.0 * d * dt)
