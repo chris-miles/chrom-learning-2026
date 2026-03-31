@@ -10,7 +10,23 @@ from chromlearn.model_fitting.diffusion import DiffusionResult
 
 @dataclass
 class FittedModel:
-    """Container for a fitted pairwise-kernel model."""
+    """Container for a fitted pairwise-kernel model.
+
+    Attributes:
+        theta: Combined coefficient vector [theta_xx ; theta_xy].
+        n_basis_xx: Number of chromosome-chromosome basis functions (0 if no xx).
+        n_basis_xy: Number of chromosome-partner basis functions.
+        basis_xx: Basis for xx kernel, or None for topologies without xx.
+        basis_xy: Basis for xy (chromosome-partner) kernel.
+        D_x: Scalar effective diffusion coefficient (um^2/s).
+        dt: Time step (seconds).
+        metadata: Optional dict of fitting metadata.
+        diffusion_model: Optional fitted D(x) model from second-stage estimation.
+        topology: Base interaction topology name (e.g. "poles", "poles_and_chroms").
+        r_cutoff_xx: If set, xx forces are zeroed beyond this distance (um).
+            Persisted through save/load.  Enforced in evaluate_kernel(),
+            simulation, and diffusion estimation.
+    """
 
     theta: np.ndarray
     n_basis_xx: int

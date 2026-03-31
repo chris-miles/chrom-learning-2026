@@ -41,9 +41,14 @@ plt.rcParams["figure.dpi"] = 110
 # ## Setup
 
 # %%
-# Update this after consulting Notebook 04 results.
+# --- Must match Notebook 04 settings ---
+# Update WINNING_TOPOLOGY after consulting NB04 results.
+# Basis domains must match NB04 (R_MIN=0.3, R_MAX=15.0) to ensure
+# robustness checks probe the same model, not a different domain.
 WINNING_TOPOLOGY = "poles"
 BASE_FRAC = 1.0 / 3.0
+R_MIN = 0.3   # um — must match NB04
+R_MAX = 15.0  # um — must match NB04
 
 CONDITION = "rpe18_ctr"
 cells_raw = load_condition(CONDITION)
@@ -54,6 +59,10 @@ BASE_CONFIG = FitConfig(
     topology=WINNING_TOPOLOGY,
     n_basis_xx=10,
     n_basis_xy=10,
+    r_min_xx=R_MIN,
+    r_max_xx=R_MAX,
+    r_min_xy=R_MIN,
+    r_max_xy=R_MAX,
     lambda_ridge=1e-3,
     lambda_rough=1.0,
     basis_eval_mode="ito",

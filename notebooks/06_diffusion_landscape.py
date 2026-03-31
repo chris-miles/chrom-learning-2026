@@ -166,6 +166,11 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
+# **Note on negativity:** The D(x) curves above come from unconstrained ridge
+# regression on noisy local-D estimates, so they can dip slightly below zero at
+# domain margins.  This is a smoothing artifact, not physical; for literal
+# diffusion interpretation, treat small negative values as consistent with zero.
+#
 # ## Per-cell D(x) consistency
 #
 # We check whether the spatial gradient is consistent across individual cells

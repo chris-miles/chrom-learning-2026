@@ -391,10 +391,12 @@ for col, topology in enumerate(chroms_topologies):
 
     f_vals = m.evaluate_kernel("xx", r_probe)
 
-    # Bootstrap band
+    # Bootstrap band (apply cutoff so CI matches effective kernel)
     phi = m.basis_xx.evaluate(r_probe)
     theta_xx_samples = boot.theta_samples[:, : m.n_basis_xx]
     curves = phi @ theta_xx_samples.T
+    if m.r_cutoff_xx is not None:
+        curves[r_probe > m.r_cutoff_xx, :] = 0.0
     lo = np.percentile(curves, 5, axis=1)
     hi = np.percentile(curves, 95, axis=1)
     ax.fill_between(r_probe, lo, hi, color="C0", alpha=0.2, label="5–95% CI")

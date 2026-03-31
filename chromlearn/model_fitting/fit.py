@@ -595,6 +595,7 @@ def fit_model(
             basis_xx=basis_xx if config.diffusion_mode == "f_corrected" else None,
             basis_xy=basis_xy if config.diffusion_mode == "f_corrected" else None,
             topology=config.topology,
+            r_cutoff_xx=config.r_cutoff_xx,
         )
 
     return FittedModel(

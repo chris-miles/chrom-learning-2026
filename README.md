@@ -58,7 +58,7 @@ Primary fitting dataset: `rpe18_ctr` NEB-annotated subset
 All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init__.py`):
 
 - **Topology** (`topology`): `"poles"` (default), `"center"` (midpoint), `"poles_and_chroms"`, `"center_and_chroms"` — selects which pairwise interactions to include. Notebook 04 also tests `"poles_and_chroms_short"` (short-range-only xx via `r_cutoff_xx`)
-- **XX cutoff** (`r_cutoff_xx`): If set (e.g. 2.5 um), chromosome-chromosome forces are zeroed beyond this distance in fitting, kernel evaluation, simulation, and diffusion estimation. Persisted through model save/load. Tests whether xx benefit is local steric repulsion vs long-range nuisance absorption
+- **XX cutoff** (`r_cutoff_xx`): If set (e.g. 2.5 um), chromosome-chromosome forces are zeroed beyond this distance in fitting, kernel evaluation, simulation, diffusion estimation, and plotting (including bootstrap CI bands). Persisted through model save/load. Tests whether xx benefit is local steric repulsion vs long-range nuisance absorption
 - **Basis evaluation mode** (`basis_eval_mode`): `"ito"` (default), `"ito_shift"` (decorrelates localization noise), `"strato"` (midpoint, reduces finite-dt bias)
 - **Diffusion estimator** (`diffusion_mode`): `"msd"` (default), `"vestergaard"` (noise-robust), `"weak_noise"` (drift-robust), `"f_corrected"` (subtracts inferred force)
 - **Variable D** (`D_variable`): fit D as a function of position along the spindle axis, radial distance, or distance from spindle center

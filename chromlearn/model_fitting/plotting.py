@@ -14,6 +14,11 @@ def plot_kernels(
     n_points: int = 200,
     ci_levels: list[float] | None = None,
 ) -> plt.Figure:
+    """Plot fitted xx and/or xy kernels with optional bootstrap CI bands.
+
+    Uses ``model.evaluate_kernel()`` so that ``r_cutoff_xx`` is respected
+    in both the mean line and the bootstrap bands.
+    """
     if ci_levels is None:
         ci_levels = [0.05]
 
@@ -35,17 +40,23 @@ def plot_kernels(
     figure, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 4.5),
                                 squeeze=False)
 
+    cutoff = getattr(model, "r_cutoff_xx", None)
+
     for col, (name, basis, theta, title) in enumerate(specs):
         axis = axes[0, col]
         radius = np.linspace(basis.r_min, basis.r_max, n_points)
-        phi = basis.evaluate(radius)
-        axis.plot(radius, phi @ theta, color="C0", linewidth=2)
+        mean_vals = model.evaluate_kernel(name, radius)
+        axis.plot(radius, mean_vals, color="C0", linewidth=2)
         if bootstrap is not None:
+            phi = basis.evaluate(radius)
             if name == "xx":
                 samples = bootstrap.theta_samples[:, : model.n_basis_xx]
             else:
                 samples = bootstrap.theta_samples[:, model.n_basis_xx :]
             curves = phi @ samples.T
+            # Apply short-range cutoff to bootstrap bands
+            if name == "xx" and cutoff is not None:
+                curves[radius > cutoff, :] = 0.0
             for level in ci_levels:
                 lo = np.quantile(curves, level, axis=1)
                 hi = np.quantile(curves, 1.0 - level, axis=1)

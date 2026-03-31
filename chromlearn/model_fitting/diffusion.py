@@ -102,6 +102,10 @@ def _predicted_force(
     topology, so ``"center"`` topologies correctly evaluate against the
     pole midpoint rather than individual poles.
 
+    Args:
+        r_cutoff_xx: If set, skip xx pairs with distance above this cutoff,
+            matching the short-range topology semantics.
+
     Returns:
         Array of shape ``(N, 3)`` with the predicted force (velocity) for each
         chromosome at the given timepoint.
@@ -182,6 +186,8 @@ def local_diffusion_estimates(
         topology: Interaction topology (``"poles"``, ``"center"``, etc.).
             Determines which partners are used when computing predicted forces
             in ``"f_corrected"`` mode.
+        r_cutoff_xx: If set, xx forces above this distance are zeroed in
+            ``"f_corrected"`` mode, matching the short-range topology.
 
     Returns:
         List (one per cell) of arrays with shape ``(T_valid, N)`` containing
@@ -308,6 +314,7 @@ def estimate_diffusion_variable(
     basis_xy=None,
     lambda_ridge: float = 1e-3,
     topology: str = "poles",
+    r_cutoff_xx: float | None = None,
 ) -> DiffusionResult:
     """Fit a spatially-varying diffusion coefficient D(coordinate).
 
@@ -334,6 +341,13 @@ def estimate_diffusion_variable(
     Returns:
         :class:`DiffusionResult` with fitted coefficients and scalar summary.
 
+    Note:
+        The solve is unconstrained ridge regression, so the fitted D(x) curve
+        can go slightly negative at domain margins where data is sparse.  This
+        is acceptable as a smooth surrogate for visualization but should not be
+        interpreted as a literal diffusion coefficient without a positivity
+        constraint.
+
     Raises:
         ValueError: If *coord_name* is not a recognised coordinate map.
     """
@@ -352,6 +366,7 @@ def estimate_diffusion_variable(
         basis_xx=basis_xx,
         basis_xy=basis_xy,
         topology=topology,
+        r_cutoff_xx=r_cutoff_xx,
     )
 
     # Step 2–3: collect valid (coordinate, D) pairs
