@@ -137,7 +137,7 @@ def run_rollout_cv(
 # as a function of reps used.
 
 # %%
-CONVERGENCE_MAX_REPS = 100
+CONVERGENCE_MAX_REPS = 48
 CONVERGENCE_SEED = 20260325
 
 print(f"Running convergence check: {CONVERGENCE_MAX_REPS} rollout reps on baseline config...")
@@ -409,6 +409,7 @@ def _run_one_grid_point(
         horizons=rollout_horizons,
         rng=np.random.default_rng(rollout_base_seed + idx),
         k_folds=k_folds,
+        n_jobs=1,  # outer Parallel handles concurrency
     )
     return (nb, lr, lro), cv_result, rollout_result
 
@@ -862,6 +863,7 @@ def _run_one_grid_point_repeated_twofold(
             horizons=rollout_horizons,
             rng=np.random.default_rng(rollout_base_seed + 10_000 * idx + rep_idx),
             k_folds=SWEEP1B_K,
+            n_jobs=1,  # outer Parallel handles concurrency
         )
         cv_scores[rep_idx] = cv_result.mean_error
         ensemble_scores[rep_idx] = rollout_ensemble_score(rollout_result)

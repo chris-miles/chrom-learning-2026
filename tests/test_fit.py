@@ -523,3 +523,49 @@ def test_rollout_cross_validate_returns_finite_metrics() -> None:
     assert float(np.nanmean(rollout.axial_mse)) < 2.0
     assert float(np.nanmean(rollout.radial_mse)) < 2.0
     assert float(np.nanmean(rollout.endpoint_mean_error)) < 2.0
+
+
+def test_bootstrap_parallel_matches_serial() -> None:
+    """n_jobs=-1 and n_jobs=1 produce identical theta_samples (same RNG seeds)."""
+    cells = [
+        make_synthetic_inference_cell(T=60, N=10, dt=0.15, D_x=0.005, seed=s)[0]
+        for s in range(3)
+    ]
+    config = FitConfig(
+        topology="poles_and_chroms",
+        n_basis_xx=4, n_basis_xy=4,
+        r_min_xx=0.0, r_max_xx=8.0,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat",
+        lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.15,
+    )
+    boot_ser = bootstrap_kernels(cells, config, n_boot=8,
+                                 rng=np.random.default_rng(42), n_jobs=1)
+    boot_par = bootstrap_kernels(cells, config, n_boot=8,
+                                 rng=np.random.default_rng(42), n_jobs=-1)
+    np.testing.assert_allclose(boot_ser.theta_samples, boot_par.theta_samples)
+
+
+def test_rollout_cv_parallel_matches_serial() -> None:
+    """n_jobs=-1 and n_jobs=1 produce identical ensemble_mse (same RNG seeds)."""
+    cells = [
+        make_synthetic_inference_cell(T=60, N=10, dt=0.15, D_x=0.005, seed=s)[0]
+        for s in range(3)
+    ]
+    config = FitConfig(
+        topology="poles_and_chroms",
+        n_basis_xx=4, n_basis_xy=4,
+        r_min_xx=0.0, r_max_xx=8.0,
+        r_min_xy=0.0, r_max_xy=10.0,
+        basis_type="hat",
+        lambda_ridge=1e-6, lambda_rough=0.0,
+        dt=0.15,
+    )
+    cv_ser = rollout_cross_validate(cells, config, n_reps=4, horizons=(1, 5),
+                                    rng=np.random.default_rng(99), n_jobs=1)
+    cv_par = rollout_cross_validate(cells, config, n_reps=4, horizons=(1, 5),
+                                    rng=np.random.default_rng(99), n_jobs=-1)
+    np.testing.assert_allclose(cv_ser.ensemble_mse, cv_par.ensemble_mse)
+    np.testing.assert_allclose(cv_ser.path_mse, cv_par.path_mse)
+    np.testing.assert_allclose(cv_ser.axial_mse, cv_par.axial_mse)

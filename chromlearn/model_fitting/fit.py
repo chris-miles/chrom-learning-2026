@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from joblib import Parallel, delayed
 from scipy import stats
 from scipy.linalg import block_diag
 
 from chromlearn.io.trajectory import TrimmedCell
 from chromlearn.model_fitting import FitConfig
+
+_DEFAULT_N_JOBS: int = -1  # -1 → all cores (joblib convention)
 
 
 @dataclass
@@ -179,11 +182,31 @@ def estimate_diffusion(
     return 0.5 * mean_square_residual * dt
 
 
+def _boot_one(cells, sampled_indices, basis_xx, basis_xy, config, roughness):
+    """Run a single bootstrap iteration."""
+    from chromlearn.model_fitting.features import build_design_matrix
+
+    sampled_cells = [cells[i] for i in sampled_indices]
+    G, V = build_design_matrix(
+        sampled_cells, basis_xx, basis_xy,
+        basis_eval_mode=config.basis_eval_mode,
+        topology=config.topology,
+        r_cutoff_xx=config.r_cutoff_xx,
+    )
+    return fit_kernels(
+        G, V,
+        lambda_ridge=config.lambda_ridge,
+        lambda_rough=config.lambda_rough,
+        R=roughness,
+    ).theta
+
+
 def bootstrap_kernels(
     cells: list[TrimmedCell],
     config: FitConfig,
     n_boot: int = 250,
     rng: np.random.Generator | None = None,
+    n_jobs: int = _DEFAULT_N_JOBS,
 ) -> BootstrapResult:
     """Bootstrap kernel fits by resampling cells with replacement.
 
@@ -191,9 +214,11 @@ def bootstrap_kernels(
     rebuilds the design matrix, and refits.  The returned
     :class:`BootstrapResult` contains the full distribution of ``theta``
     samples for confidence-interval construction.
+
+    *n_jobs* controls parallelism (joblib convention: ``-1`` = all cores,
+    ``1`` = serial).
     """
     from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
-    from chromlearn.model_fitting.features import build_design_matrix
 
     if rng is None:
         rng = np.random.default_rng()
@@ -209,25 +234,19 @@ def bootstrap_kernels(
 
     R_xx = basis_xx.roughness_matrix() if basis_xx is not None else None
     roughness = _block_roughness(R_xx, basis_xy.roughness_matrix())
-    n_bxx = basis_xx.n_basis if basis_xx is not None else 0
-    theta_samples = np.zeros((n_boot, n_bxx + basis_xy.n_basis))
 
-    for boot_index in range(n_boot):
-        sampled_indices = rng.choice(len(cells), size=len(cells), replace=True)
-        sampled_cells = [cells[i] for i in sampled_indices]
-        G, V = build_design_matrix(
-            sampled_cells, basis_xx, basis_xy,
-            basis_eval_mode=config.basis_eval_mode,
-            topology=config.topology,
-            r_cutoff_xx=config.r_cutoff_xx,
-        )
-        theta_samples[boot_index] = fit_kernels(
-            G, V,
-            lambda_ridge=config.lambda_ridge,
-            lambda_rough=config.lambda_rough,
-            R=roughness,
-        ).theta
+    # Pre-generate all resample indices (deterministic from rng)
+    all_indices = [
+        rng.choice(len(cells), size=len(cells), replace=True)
+        for _ in range(n_boot)
+    ]
 
+    theta_list = Parallel(n_jobs=n_jobs)(
+        delayed(_boot_one)(cells, idx, basis_xx, basis_xy, config, roughness)
+        for idx in all_indices
+    )
+
+    theta_samples = np.array(theta_list)
     return BootstrapResult(
         theta_samples=theta_samples,
         theta_mean=np.mean(theta_samples, axis=0),
@@ -318,6 +337,17 @@ def cross_validate(
     )
 
 
+def _rollout_one(test_cell, model, seed):
+    """Run one simulate_cell rep, return chromosomes + spindle-frame arrays."""
+    from chromlearn.io.trajectory import spindle_frame
+    from chromlearn.model_fitting.simulate import simulate_cell
+
+    rep_rng = np.random.default_rng(seed)
+    _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
+    sf = spindle_frame(sim_cell)
+    return sim_cell.chromosomes, sf.axial, sf.radial
+
+
 def rollout_cross_validate(
     cells: list[TrimmedCell],
     config: FitConfig,
@@ -325,6 +355,7 @@ def rollout_cross_validate(
     horizons: tuple[int, ...] = (1, 5, 10, 20),
     rng: np.random.Generator | None = None,
     k_folds: int | None = None,
+    n_jobs: int = _DEFAULT_N_JOBS,
 ) -> RolloutCVResult:
     """Rollout cross-validation (LOO or k-fold).
 
@@ -347,7 +378,6 @@ def rollout_cross_validate(
     - ``horizon_errors``: combined axial+radial squared error at selected time horizons.
     """
     from chromlearn.io.trajectory import spindle_frame
-    from chromlearn.model_fitting.simulate import simulate_cell
 
     if not cells:
         raise ValueError("rollout_cross_validate requires at least one cell.")
@@ -392,16 +422,21 @@ def rollout_cross_validate(
             real_axial_mean = np.nanmean(real_sf.axial, axis=1)
             real_radial_mean = np.nanmean(real_sf.radial, axis=1)
 
-            # Simulate n_reps rollouts
-            sim_chroms = []
-            sim_rollouts = []
-            for _ in range(n_reps):
-                rep_rng = np.random.default_rng(
-                    int(rng.integers(0, np.iinfo(np.int64).max))
-                )
-                _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
-                sim_chroms.append(sim_cell.chromosomes)
-                sim_rollouts.append(spindle_frame(sim_cell))
+            # Pre-generate seeds for reproducibility
+            rep_seeds = [
+                int(rng.integers(0, np.iinfo(np.int64).max))
+                for _ in range(n_reps)
+            ]
+
+            # Simulate n_reps rollouts (parallel via joblib)
+            results = Parallel(n_jobs=n_jobs)(
+                delayed(_rollout_one)(test_cell, model, s)
+                for s in rep_seeds
+            )
+
+            sim_chroms = [r[0] for r in results]
+            sim_axials = [r[1] for r in results]
+            sim_radials = [r[2] for r in results]
 
             # Per-rep path MSE (includes both drift bias and stochastic variance)
             real_chroms = test_cell.chromosomes  # (T, 3, N)
@@ -432,11 +467,11 @@ def rollout_cross_validate(
 
             # Spindle-frame diagnostics
             sim_axial_mean = np.nanmean(
-                np.stack([np.nanmean(sf.axial, axis=1) for sf in sim_rollouts], axis=0),
+                np.stack([np.nanmean(ax, axis=1) for ax in sim_axials], axis=0),
                 axis=0,
             )
             sim_radial_mean = np.nanmean(
-                np.stack([np.nanmean(sf.radial, axis=1) for sf in sim_rollouts], axis=0),
+                np.stack([np.nanmean(rad, axis=1) for rad in sim_radials], axis=0),
                 axis=0,
             )
 
@@ -457,10 +492,10 @@ def rollout_cross_validate(
             real_rad_valid = real_sf.radial[-1]
             real_rad_valid = real_rad_valid[np.isfinite(real_rad_valid)]
             sim_ax_valid = np.concatenate(
-                [sf.axial[-1][np.isfinite(sf.axial[-1])] for sf in sim_rollouts]
+                [ax[-1][np.isfinite(ax[-1])] for ax in sim_axials]
             )
             sim_rad_valid = np.concatenate(
-                [sf.radial[-1][np.isfinite(sf.radial[-1])] for sf in sim_rollouts]
+                [rad[-1][np.isfinite(rad[-1])] for rad in sim_radials]
             )
 
             if real_ax_valid.size > 0 and sim_ax_valid.size > 0:

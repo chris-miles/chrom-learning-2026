@@ -342,7 +342,7 @@ print("So the primary CV score is sensible, but in this dataset it only weakly s
 # N cell-level resamples per topology; shaded band = 5–95% quantile interval.
 
 # %%
-N_BOOT = 200
+N_BOOT = 100
 boot_rng = np.random.default_rng(42)
 
 print(f"Bootstrapping kernels ({N_BOOT} resamples × {len(TOPOLOGIES)} topologies)...")
@@ -661,8 +661,9 @@ for cell_idx in QUAL_CELL_IDXS[:2]:
     # Panels 1+: rollouts from selected topologies
     for ti, topology in enumerate(PCA_TOPOLOGIES):
         sim_seed = 2000 + 100 * cell_idx + ti
-        _traj, sim_cell = _simulate_cell_once(cell, models[topology], seed=sim_seed)
-        _plot_pca_panel(axes[0, ti + 1], sim_cell, f"Rollout — {topology}")
+        _traj, sim_cell_3d = simulate_cell(cell, models[topology],
+                                           rng=np.random.default_rng(sim_seed))
+        _plot_pca_panel(axes[0, ti + 1], sim_cell_3d, f"Rollout — {topology}")
 
     fig.suptitle(f"Trajectories in PCA space — {cell.cell_id}\n"
                  "Black = poles, colored = chromosomes (dot = endpoint), "
