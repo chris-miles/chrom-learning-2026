@@ -22,13 +22,21 @@ from chromlearn.io.trajectory import compute_end_sep, pole_pole_distance, trim_t
 plt.rcParams["figure.dpi"] = 110
 
 # %% [markdown]
+# ## Configuration
+
+# %%
+CONDITION = "rpe18_ctr"          # Primary condition to inspect in the walkthrough.
+FRAC_NEB_AO_WINDOW = 0.4         # Trim each trajectory to this fraction of the NEB-to-AO window.
+MIN_FRAMES = 100                 # Flag windows shorter than this many frames in the summary table.
+
+# %% [markdown]
 # ## Single-cell walkthrough
 #
 # Load one rpe18_ctr cell and inspect its structure.
 
 # %%
-cells_ctr = list_cells("rpe18_ctr")
-print(f"Found {len(cells_ctr)} rpe18_ctr cells:")
+cells_ctr = list_cells(CONDITION)
+print(f"Found {len(cells_ctr)} {CONDITION} cells:")
 for cell_id in cells_ctr:
     print(f"  {cell_id}")
 
@@ -59,7 +67,7 @@ axis.legend()
 plt.show()
 
 # %%
-trimmed = trim_trajectory(cell, method="neb_ao_frac")
+trimmed = trim_trajectory(cell, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW)
 print(
     f"Trimmed frames: {trimmed.start_frame}-{trimmed.end_frame} "
     f"({trimmed.chromosomes.shape[0]} timepoints)"
@@ -82,8 +90,6 @@ plt.show()
 # - flag if any window is too short (< 100 frames)
 
 # %%
-MIN_FRAMES = 100
-
 all_conditions = list(CONDITIONS.keys())
 all_cells: list[CellData] = []
 for cond in all_conditions:
@@ -207,7 +213,8 @@ for label, cells_exc in excluded_cells.items():
 groups = {"rpe18_ctr (included)": included_ctr}
 groups.update(excluded_cells)
 
-fig_angle, axes_angle = plt.subplots(1, len(groups), figsize=(5 * len(groups), 4), squeeze=False)
+fig_angle, axes_angle = plt.subplots(1, len(groups), figsize=(5 * len(groups), 4), squeeze=False,
+                                      sharey=True)
 
 for gi, (label, cells_group) in enumerate(groups.items()):
     ax = axes_angle[0, gi]
@@ -239,7 +246,8 @@ plt.show()
 # Same grouping as above, now showing pole-pole distance vs time from NEB.
 
 # %%
-fig_ppd, axes_ppd = plt.subplots(1, len(groups), figsize=(5 * len(groups), 4), squeeze=False)
+fig_ppd, axes_ppd = plt.subplots(1, len(groups), figsize=(5 * len(groups), 4), squeeze=False,
+                                  sharey=True)
 
 for gi, (label, cells_group) in enumerate(groups.items()):
     ax = axes_ppd[0, gi]
@@ -264,8 +272,8 @@ plt.show()
 # %% [markdown]
 # ## Spindle elongation grid — all cells
 #
-# Pole-pole distance over time with NEB, AO, end_sep, and midpoint(NEB,AO)
-# markers. Cells with a short training window are marked with `*`.
+# Pole-pole distance over time with NEB, first AO, computed end_sep, and the
+# midpoint between NEB and AO as a visual reference.
 
 # %%
 n = len(all_cells)
@@ -279,24 +287,17 @@ for idx, c in enumerate(all_cells):
     t = np.arange(len(ppd)) * c.dt
 
     neb_frame = c.neb - 1
-    ao_mean_frame = int(round((c.ao1 + c.ao2) / 2.0)) - 1
-    midpoint_frame = (neb_frame + ao_mean_frame) // 2
+    ao_frame = min(c.ao1, c.ao2) - 1
+    midpoint_frame = (neb_frame + ao_frame) // 2
     end_sep_frame = compute_end_sep(c)
 
     ax.plot(t, ppd, linewidth=0.8)
     ax.axvline(neb_frame * c.dt, color="r", linestyle="--", linewidth=0.8, label="NEB")
-    ax.axvline(ao_mean_frame * c.dt, color="g", linestyle="--", linewidth=0.8, label="AO")
+    ax.axvline(ao_frame * c.dt, color="g", linestyle="--", linewidth=0.8, label="AO")
     ax.axvline(end_sep_frame * c.dt, color="orange", linestyle="--", linewidth=0.8, label="end_sep")
     ax.axvline(midpoint_frame * c.dt, color="purple", linestyle=":", linewidth=0.8, label="mid(NEB,AO)")
 
-    # Shade the default training window
-    ax.axvspan(neb_frame * c.dt, midpoint_frame * c.dt, alpha=0.08, color="purple")
-
-    title = c.cell_id
-    if window_info[c.cell_id]["short"]:
-        title += " *"
-        ax.set_facecolor("#fff0f0")
-    ax.set_title(title, fontsize=8)
+    ax.set_title(c.cell_id, fontsize=8)
     ax.tick_params(labelsize=7)
 
 axes[0, 0].legend(fontsize=7, loc="lower right")
@@ -306,6 +307,43 @@ for idx in range(n, nrows * ncols):
 
 fig.supxlabel("Time (s)")
 fig.supylabel("Pole-pole distance (um)")
-fig.suptitle("Spindle elongation — all cells (* = short training window)")
+fig.suptitle("Spindle elongation — all cells")
 fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## end_sep implied fraction vs chosen baseline
+#
+# For each rpe18_ctr cell, compute the NEB-to-AO fraction implied by the
+# velocity-based `end_sep` detector and compare to the fixed fraction used
+# throughout the analysis notebooks.
+
+# %%
+ctr_cells = load_condition(CONDITION)
+implied_fracs = []
+cell_labels = []
+for c in ctr_cells:
+    neb = c.neb - 1
+    ao = min(c.ao1, c.ao2) - 1
+    span = ao - neb
+    if span <= 0:
+        continue
+    es = compute_end_sep(c)
+    implied_fracs.append((es - neb) / span)
+    cell_labels.append(c.cell_id)
+
+implied_fracs = np.array(implied_fracs)
+
+fig_es, ax_es = plt.subplots(figsize=(6, 3.5))
+ax_es.scatter(range(len(implied_fracs)), implied_fracs, s=40, zorder=3)
+ax_es.axhline(FRAC_NEB_AO_WINDOW, color="orange", linestyle="--", linewidth=1.5,
+              label=f"chosen frac = {FRAC_NEB_AO_WINDOW}")
+ax_es.axhline(np.mean(implied_fracs), color="gray", linestyle=":", linewidth=1,
+              label=f"mean end_sep frac = {np.mean(implied_fracs):.3f}")
+ax_es.set_xticks(range(len(cell_labels)))
+ax_es.set_xticklabels(cell_labels, rotation=45, ha="right", fontsize=7)
+ax_es.set_ylabel("Implied NEB-to-AO fraction")
+ax_es.set_title(f"end_sep implied fraction — {CONDITION}")
+ax_es.legend(fontsize=8)
+fig_es.tight_layout()
 plt.show()

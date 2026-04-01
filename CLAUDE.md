@@ -20,7 +20,7 @@ Notebooks in `notebooks/` are the primary interface. Raw data lives in `data/` (
 - dt = 5 seconds, spatial units = microns
 - Chromosome position = centroid of sister kinetochores (single 3D particle)
 - Centrosomes are external/given (not modeled); justified in notebook 03
-- Trajectories start at NEB, endpoint is configurable (default: `neb_ao_frac` with `frac=1/3`, capturing the early gathering phase before deep metaphase)
+- Trajectories start at NEB, endpoint is configurable (default: `neb_ao_frac` with `frac=0.4`, capturing the early gathering phase before deep metaphase)
 - Files with `neb = NaN` are anaphase-only and should be ignored
 - Primary condition for fitting: `rpe18_ctr` (12 cells with NEB annotations after loading; 507 excluded as oblique outlier)
 

@@ -44,32 +44,43 @@ from chromlearn.model_fitting.simulate import simulate_cell
 plt.rcParams["figure.dpi"] = 110
 
 # %% [markdown]
-# ## Load and fit the control model
-#
-# We use the `poles` topology with the same hyperparameters as NB04/05.
-# The fit gives us the drift kernels and a scalar D; we then investigate
-# whether D is better described as a function of position.
+# ## Configuration
 
 # %%
-CONDITION = "rpe18_ctr"
+CONDITION = "rpe18_ctr"          # Control-condition cells used for the diffusion analysis.
+FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
+TOPOLOGY = "poles"               # Drift model carried over from the main selection notebook.
+N_BASIS_XX = 10                  # Number of spline basis functions for chromosome-chromosome kernels.
+N_BASIS_XY = 10                  # Number of spline basis functions for pole-chromosome kernels.
+R_MIN = 0.3                      # Lower basis cutoff in microns.
+R_MAX = 15.0                     # Upper basis cutoff in microns.
+BASIS_TYPE = "bspline"           # Functional basis used for the learned kernels.
+LAMBDA_RIDGE = 1e-3              # L2 penalty on coefficient magnitude.
+LAMBDA_ROUGH = 1.0               # Smoothness penalty on neighboring spline coefficients.
+BASIS_EVAL_MODE = "ito"          # Drift-evaluation convention used in the fit.
+DT = 5.0                         # Frame interval in seconds.
+
+# %%
 cells_raw = load_condition(CONDITION)
-cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
-print(f"Loaded {len(cells)} {CONDITION} cells")
+cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW) for c in cells_raw]
+print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_AO_WINDOW:.3f})")
 
 # Use the same config as NB04 (poles topology, 10 basis functions, 1e-3 reg)
 config = FitConfig(
-    topology="poles",
-    n_basis_xx=10,
-    n_basis_xy=10,
-    r_min_xx=0.3,
-    r_max_xx=15.0,
-    r_min_xy=0.3,
-    r_max_xy=15.0,
-    basis_type="bspline",
-    lambda_ridge=1e-3,
-    lambda_rough=1.0,
-    basis_eval_mode="ito",
-    dt=5.0,
+    topology=TOPOLOGY,
+    n_basis_xx=N_BASIS_XX,
+    n_basis_xy=N_BASIS_XY,
+    r_min_xx=R_MIN,
+    r_max_xx=R_MAX,
+    r_min_xy=R_MIN,
+    r_max_xy=R_MAX,
+    basis_type=BASIS_TYPE,
+    lambda_ridge=LAMBDA_RIDGE,
+    lambda_rough=LAMBDA_ROUGH,
+    basis_eval_mode=BASIS_EVAL_MODE,
+    endpoint_method="neb_ao_frac",
+    endpoint_frac=FRAC_NEB_AO_WINDOW,
+    dt=DT,
 )
 
 model = fit_model(cells, config)

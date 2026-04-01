@@ -52,7 +52,7 @@ class FitConfig:
     _VALID_ENDPOINT_METHODS: ClassVar = frozenset({"neb_ao_frac", "end_sep"})
 
     endpoint_method: str = "neb_ao_frac"
-    endpoint_frac: float = 1.0 / 3.0
+    endpoint_frac: float = 0.4
     n_basis_xx: int = 10
     n_basis_xy: int = 10
     r_min_xx: float = 0.5

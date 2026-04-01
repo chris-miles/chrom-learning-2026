@@ -23,6 +23,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
+from scipy.linalg import block_diag
 
 from chromlearn import find_repo_root
 
@@ -34,10 +35,18 @@ from chromlearn.io.trajectory import trim_trajectory
 
 plt.rcParams["figure.dpi"] = 110
 
+# %% [markdown]
+# ## Configuration
+
 # %%
-cells_raw = load_condition("rpe18_ctr")
-cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
-print(f"Loaded {len(cells)} rpe18_ctr cells")
+CONDITION = "rpe18_ctr"          # Analyze the control condition used throughout the SFI notebooks.
+FRAC_NEB_AO_WINDOW = 0.4         # Trim each cell to this fraction of the NEB-to-AO window.
+EXAMPLE_CELL = 1                 # Cell index used for the illustrative PCA trajectory panel.
+
+# %%
+cells_raw = load_condition(CONDITION)
+cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW) for c in cells_raw]
+print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_AO_WINDOW:.3f})")
 
 # %% [markdown]
 # ## Part A — Model-free evidence
@@ -49,9 +58,6 @@ print(f"Loaded {len(cells)} rpe18_ctr cells")
 # from the chromosome center of mass.  Color encodes time (light → dark).
 
 # %%
-EXAMPLE_CELL = 1  # rpe18_ctr_032 — same cell as old MATLAB fig (c=9 in cell_db)
-
-
 def _colorline(ax, x, y, t, cmap, linewidth=1.5, alpha=1.0):
     """Plot a line colored by a scalar parameter *t*."""
     points = np.column_stack([x, y]).reshape(-1, 1, 2)
@@ -153,14 +159,59 @@ print(f"Peak correlation value: {lag_result.median[peak_idx]:.3f}")
 # %%
 from chromlearn.model_fitting.basis import BSplineBasis
 
+# Match the main fitter's light ridge + stronger roughness prior so the
+# kernel shape reflects smooth spindle dynamics rather than basis jitter.
+LAMBDA_RIDGE = 1e-3
+LAMBDA_ROUGH = 1.0
+
+
+def _padded_domain(values, pad_frac=0.10):
+    """Return a data-driven basis domain with a small safety margin."""
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        raise ValueError("Cannot build a basis domain from an empty sample.")
+    lo = float(vals.min())
+    hi = float(vals.max())
+    span = hi - lo
+    pad = pad_frac * span if span > 0 else pad_frac * max(abs(hi), 1.0)
+    return max(1e-6, lo - pad), hi + pad
+
+
+# Use the actual distance support in this trimmed dataset, with a small pad.
+all_pp_dists = []
+all_xp_dists = []
+for cell in cells:
+    pp = np.linalg.norm(cell.centrioles[:, :, 1] - cell.centrioles[:, :, 0], axis=1)
+    all_pp_dists.extend(pp)
+
+    poles = np.moveaxis(cell.centrioles, 2, 1)      # (T, 2, 3)
+    chroms = np.moveaxis(cell.chromosomes, 2, 1)    # (T, N, 3)
+    for t in range(chroms.shape[0]):
+        chroms_t = chroms[t]
+        valid = ~np.any(np.isnan(chroms_t), axis=1)
+        if not valid.any():
+            continue
+        chroms_valid = chroms_t[valid]
+        for p in range(2):
+            delta = chroms_valid - poles[t, p]
+            dist = np.linalg.norm(delta, axis=1)
+            all_xp_dists.extend(dist[dist > 1e-12])
+
+all_pp_dists = np.array(all_pp_dists)
+all_xp_dists = np.array(all_xp_dists)
+
 # Build a small regression for centrosome velocity.
 # Each centrosome's velocity at each timepoint is one observation (3 rows for x,y,z).
 # Features: f_cc(pole-pole distance) * direction + sum_j f_xc(r_jp) * direction_jp
 
 n_basis_cc = 6
 n_basis_xc = 6
-basis_cc = BSplineBasis(1.0, 20.0, n_basis_cc)   # pole-pole distances (max ~17.6 um observed)
-basis_xc = BSplineBasis(0.5, 15.0, n_basis_xc)   # chromosome-to-pole distances
+basis_cc = BSplineBasis(*_padded_domain(all_pp_dists), n_basis_cc)
+basis_xc = BSplineBasis(*_padded_domain(all_xp_dists), n_basis_xc)
+R_cc = basis_cc.roughness_matrix()
+R_xc = basis_xc.roughness_matrix()
+R_full = block_diag(R_cc, R_xc)
 
 G_rows = []
 V_rows = []
@@ -217,34 +268,34 @@ print(f"Centrosome design matrix: {G_cent.shape[0]} rows, {G_cent.shape[1]} colu
 # 3. **xc-only model**: chromosome-on-centrosome interaction alone
 
 # %%
-from numpy.linalg import lstsq
-
-lambda_ridge = 1e-3
 n_cc = n_basis_cc
 n_xc = n_basis_xc
 I_full = np.eye(n_cc + n_xc)
 
 
-def ridge_fit(G, V, lam=lambda_ridge):
+def ridge_fit(G, V, R=None, lam=LAMBDA_RIDGE, lam_rough=LAMBDA_ROUGH):
     n = G.shape[1]
-    theta = np.linalg.solve(G.T @ G + lam * np.eye(n), G.T @ V)
+    penalty = lam * np.eye(n)
+    if R is not None:
+        penalty = penalty + lam_rough * R
+    theta = np.linalg.solve(G.T @ G + penalty, G.T @ V)
     residuals = V - G @ theta
     return theta, residuals
 
 
 # Full model
-theta_full, res_full = ridge_fit(G_cent, V_cent)
+theta_full, res_full = ridge_fit(G_cent, V_cent, R=R_full)
 ss_res_full = np.sum(res_full**2)
 ss_tot = np.sum((V_cent - V_cent.mean()) ** 2)
 
 # cc-only model
 G_cc_only = G_cent[:, :n_cc]
-theta_cc, res_cc = ridge_fit(G_cc_only, V_cent)
+theta_cc, res_cc = ridge_fit(G_cc_only, V_cent, R=R_cc)
 ss_res_cc = np.sum(res_cc**2)
 
 # xc-only model
 G_xc_only = G_cent[:, n_cc:]
-theta_xc, res_xc = ridge_fit(G_xc_only, V_cent)
+theta_xc, res_xc = ridge_fit(G_xc_only, V_cent, R=R_xc)
 ss_res_xc = np.sum(res_xc**2)
 
 r2_full = 1 - ss_res_full / ss_tot
@@ -295,14 +346,6 @@ print(f"Cohen's f^2 {'< 0.02 (negligible)' if cohens_f2 < 0.02 else '>= 0.02 (no
 # the empirical distribution of pole-pole distances in the data.
 
 # %%
-all_pp_dists = []
-for cell in cells:
-    dists = np.linalg.norm(
-        cell.centrioles[:, :, 1] - cell.centrioles[:, :, 0], axis=1
-    )
-    all_pp_dists.extend(dists)
-all_pp_dists = np.array(all_pp_dists)
-
 fig, ax = plt.subplots(figsize=(6, 3.5))
 ax.hist(all_pp_dists, bins=50, edgecolor="k", alpha=0.7)
 ax.axvline(basis_cc.r_min, color="r", linestyle="--", label=f"basis range [{basis_cc.r_min}, {basis_cc.r_max}]")
@@ -322,7 +365,10 @@ print(f"Pole-pole distances: median={np.median(all_pp_dists):.1f}, "
 # %%
 fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
 
-r_cc_plot = np.linspace(basis_cc.r_min, basis_cc.r_max, 200)
+# Interpret the fitted kernel only over the observed support.  Outside the
+# data range the basis is clamped at the boundary, so plotting farther right
+# would create an artificial tail that is not constrained by measurements.
+r_cc_plot = np.linspace(all_pp_dists.min(), all_pp_dists.max(), 200)
 
 # f_cc from cc-only model
 f_cc_only_vals = basis_cc.evaluate(r_cc_plot) @ theta_cc[:n_cc]
@@ -335,17 +381,17 @@ axes[0].plot(r_cc_plot, f_cc_full_vals, linewidth=2, color="C1", linestyle="--",
 
 axes[0].axhline(0, color="0.5", linestyle="--", linewidth=0.8)
 axes[0].set_xlabel("Pole-pole distance (um)")
-axes[0].set_ylabel("Force (positive = attractive)")
-axes[0].set_title("Effective pole-separation $f_{cc}(r)$")
+axes[0].set_ylabel("Effective drift coefficient (negative = separation)")
+axes[0].set_title("Effective pole-separation $f_{cc}(r)$ over observed support")
 axes[0].legend(fontsize=8)
 
 # f_xc from full model
-r_xc_plot = np.linspace(basis_xc.r_min, basis_xc.r_max, 200)
+r_xc_plot = np.linspace(all_xp_dists.min(), all_xp_dists.max(), 200)
 f_xc_vals = basis_xc.evaluate(r_xc_plot) @ theta_full[n_cc:]
 axes[1].plot(r_xc_plot, f_xc_vals, linewidth=2, color="C1")
 axes[1].axhline(0, color="0.5", linestyle="--", linewidth=0.8)
 axes[1].set_xlabel("Chromosome-to-pole distance (um)")
-axes[1].set_ylabel("Force (positive = attractive)")
+axes[1].set_ylabel("Effective drift coefficient")
 axes[1].set_title("Chromosome-on-centrosome $f_{xc}(r)$")
 
 # Panel 3: prediction error comparison
@@ -440,12 +486,12 @@ for i in range(len(cells)):
     G_test, V_test = cell_matrices[i]
 
     # Full model
-    theta_f, _ = ridge_fit(G_train, V_train)
+    theta_f, _ = ridge_fit(G_train, V_train, R=R_full)
     rmse_f = np.sqrt(np.mean((V_test - G_test @ theta_f) ** 2))
     cv_rmse_full.append(rmse_f)
 
     # cc-only model
-    theta_c, _ = ridge_fit(G_train[:, :n_cc], V_train)
+    theta_c, _ = ridge_fit(G_train[:, :n_cc], V_train, R=R_cc)
     rmse_c = np.sqrt(np.mean((V_test - G_test[:, :n_cc] @ theta_c) ** 2))
     cv_rmse_cc.append(rmse_c)
 
@@ -504,7 +550,7 @@ for perm in range(N_PERM):
 
     G_perm = np.vstack(G_perm_parts)
     V_perm = np.concatenate(V_perm_parts)
-    theta_perm, res_perm = ridge_fit(G_perm, V_perm)
+    theta_perm, res_perm = ridge_fit(G_perm, V_perm, R=R_full)
     ss_res_perm = np.sum(res_perm**2)
     r2_perm = 1 - ss_res_perm / ss_tot
     perm_delta_r2[perm] = r2_perm - r2_cc
@@ -629,8 +675,8 @@ for b in range(N_BOOT):
     G_boot = np.vstack([cell_matrices[j][0] for j in boot_idx])
     V_boot = np.concatenate([cell_matrices[j][1] for j in boot_idx])
 
-    theta_boot_cc, _ = ridge_fit(G_boot[:, :n_cc], V_boot)
-    theta_boot_full, _ = ridge_fit(G_boot, V_boot)
+    theta_boot_cc, _ = ridge_fit(G_boot[:, :n_cc], V_boot, R=R_cc)
+    theta_boot_full, _ = ridge_fit(G_boot, V_boot, R=R_full)
 
     # Build fast callables for this bootstrap replicate
     f_cc_only = _make_force_callable(basis_cc, theta_boot_cc)
@@ -663,6 +709,10 @@ sim_cc_pooled = sim_cc_interp.mean(axis=1)
 sim_full_pooled = sim_full_interp.mean(axis=1)
 
 fig, ax = plt.subplots(figsize=(7, 5))
+
+# Individual cell traces (faint, behind everything)
+for ci in range(real_interp.shape[0]):
+    ax.plot(t_norm, real_interp[ci], color="0.70", linewidth=0.7, alpha=0.5, zorder=1)
 
 # Real data: mean +/- std across cells
 real_mean = real_interp.mean(axis=0)

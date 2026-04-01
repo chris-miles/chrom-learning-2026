@@ -45,31 +45,38 @@ plt.rcParams["figure.dpi"] = 110
 # Update WINNING_TOPOLOGY after consulting NB04 results.
 # Basis domains must match NB04 (R_MIN=0.3, R_MAX=15.0) to ensure
 # robustness checks probe the same model, not a different domain.
-WINNING_TOPOLOGY = "poles"
-BASE_FRAC = 1.0 / 3.0
-R_MIN = 0.3   # um — must match NB04
-R_MAX = 15.0  # um — must match NB04
+CONDITION = "rpe18_ctr"          # Control-condition cells used in the robustness sweeps.
+WINNING_TOPOLOGY = "poles"       # Baseline topology imported from NB04.
+FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
+N_BASIS_XX = 10                  # Number of spline basis functions for chromosome-chromosome kernels.
+N_BASIS_XY = 10                  # Number of spline basis functions for pole-chromosome kernels.
+R_MIN = 0.3   # um               # Lower basis cutoff, set by tracking resolution.
+R_MAX = 15.0  # um               # Upper basis cutoff, set by spindle-scale geometry.
+LAMBDA_RIDGE = 1e-3              # L2 penalty on coefficient magnitude.
+LAMBDA_ROUGH = 1.0               # Smoothness penalty on neighboring spline coefficients.
+BASIS_EVAL_MODE = "ito"          # Drift-evaluation convention used throughout the main analysis.
+DIFFUSION_MODE = "msd"           # Baseline diffusion estimator used in the fit.
+DT = 5.0                         # Frame interval in seconds.
 
-CONDITION = "rpe18_ctr"
 cells_raw = load_condition(CONDITION)
-cells = [trim_trajectory(c, method="neb_ao_frac", frac=BASE_FRAC) for c in cells_raw]
-print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to neb_ao_frac={BASE_FRAC:.3f} window).")
+cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW) for c in cells_raw]
+print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_AO_WINDOW:.3f} window).")
 
 BASE_CONFIG = FitConfig(
     topology=WINNING_TOPOLOGY,
-    n_basis_xx=10,
-    n_basis_xy=10,
+    n_basis_xx=N_BASIS_XX,
+    n_basis_xy=N_BASIS_XY,
     r_min_xx=R_MIN,
     r_max_xx=R_MAX,
     r_min_xy=R_MIN,
     r_max_xy=R_MAX,
-    lambda_ridge=1e-3,
-    lambda_rough=1.0,
-    basis_eval_mode="ito",
+    lambda_ridge=LAMBDA_RIDGE,
+    lambda_rough=LAMBDA_ROUGH,
+    basis_eval_mode=BASIS_EVAL_MODE,
     endpoint_method="neb_ao_frac",
-    endpoint_frac=BASE_FRAC,
-    diffusion_mode="msd",
-    dt=5.0,
+    endpoint_frac=FRAC_NEB_AO_WINDOW,
+    diffusion_mode=DIFFUSION_MODE,
+    dt=DT,
 )
 
 ROLLOUT_REPS = 32
@@ -1233,7 +1240,8 @@ print(
 # ## Sweep 3: Endpoint fraction
 #
 # Sweep the NEB-to-AO fraction, focusing on the early-phase regime where the
-# gathering dynamics are most active. We also try end_sep (95% plateau).
+# gathering dynamics are most active. We also try end_sep using the legacy
+# normalized spindle-separation velocity rule, clipped before AO.
 
 # %%
 ENDPOINT_FRACS = [0.15, 0.2, 0.25, 0.33, 0.4, 0.5]

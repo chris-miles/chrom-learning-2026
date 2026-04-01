@@ -58,12 +58,22 @@ from chromlearn.analysis.pca_projection import fit_pca_basis
 
 plt.rcParams["figure.dpi"] = 110
 
-# %%
-BASE_FRAC = 1.0 / 3.0
+# %% [markdown]
+# ## Configuration
 
-cells_raw = load_condition("rpe18_ctr")
-cells = [trim_trajectory(c, method="neb_ao_frac", frac=BASE_FRAC) for c in cells_raw]
-print(f"Loaded {len(cells)} rpe18_ctr cells (trimmed to neb_ao_frac={BASE_FRAC:.3f} window)")
+# %%
+CONDITION = "rpe18_ctr"          # Control-condition cells used for topology selection.
+FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
+N_BASIS = 10                     # Number of spline basis functions per interaction kernel.
+LAMBDA_RIDGE = 1e-3              # L2 penalty on coefficient magnitude.
+LAMBDA_ROUGH = 1.0               # Smoothness penalty on neighboring spline coefficients.
+BASIS_TYPE = "bspline"           # Functional basis used for the learned kernels.
+BASIS_EVAL_MODE = "ito"          # SFI convention for evaluating the drift basis.
+DT = 5.0                         # Frame interval in seconds.
+
+cells_raw = load_condition(CONDITION)
+cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW) for c in cells_raw]
+print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_AO_WINDOW:.3f} window)")
 for c in cells:
     T, _, N = c.chromosomes.shape
     print(f"  {c.cell_id}: {T} frames, {N} chromosomes")
@@ -183,15 +193,11 @@ plt.show()
 # - `n_basis = 10` B-spline basis functions for both xx and xy kernels
 # - `lambda_ridge = 1e-3`, `lambda_rough = 1.0`
 # - `basis_eval_mode = "ito"` (current positions, standard SFI)
-# - `endpoint_frac = 1/3` of the NEB-to-AO window
+# - `endpoint_frac = 0.4` of the NEB-to-AO window
 #
 # Domain parameters are fixed a priori (see basis-domain section above).
 
 # %%
-N_BASIS = 10
-LAMBDA_RIDGE = 1e-3
-LAMBDA_ROUGH = 1.0
-
 configs: dict[str, FitConfig] = {}
 for topology in TOPOLOGIES:
     r_cutoff = R_CUTOFF_XX_SHORT if topology == "poles_and_chroms_short" else None
@@ -203,13 +209,13 @@ for topology in TOPOLOGIES:
         r_max_xx=R_MAX,
         r_min_xy=R_MIN,
         r_max_xy=R_MAX,
-        basis_type="bspline",
+        basis_type=BASIS_TYPE,
         lambda_ridge=LAMBDA_RIDGE,
         lambda_rough=LAMBDA_ROUGH,
-        basis_eval_mode="ito",
+        basis_eval_mode=BASIS_EVAL_MODE,
         endpoint_method="neb_ao_frac",
-        endpoint_frac=BASE_FRAC,
-        dt=5.0,
+        endpoint_frac=FRAC_NEB_AO_WINDOW,
+        dt=DT,
         r_cutoff_xx=r_cutoff,
     )
 
@@ -645,9 +651,9 @@ for cell_idx in QUAL_CELL_IDXS[:2]:
                 continue
             cj_pca = basis.project(cj)
             ax.plot(cj_pca[:, 0], cj_pca[:, 1], color=chrom_cmap[ci],
-                    linewidth=0.6, alpha=0.4)
+                    linewidth=1.2, alpha=0.55)
             ax.plot(cj_pca[-1, 0], cj_pca[-1, 1], "o", color=chrom_cmap[ci],
-                    markersize=2.5, alpha=0.6)
+                    markersize=2.5, alpha=0.7)
 
         ax.set_xlabel("PC1 (um)")
         ax.set_ylabel("PC2 (um)")

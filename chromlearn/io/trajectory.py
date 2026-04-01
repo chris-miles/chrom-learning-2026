@@ -81,54 +81,87 @@ def _savgol_window(length: int, desired: int) -> int | None:
     return window
 
 
+def _normalize_range(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    span = float(np.max(values) - np.min(values))
+    if span <= 1e-12:
+        return np.zeros_like(values)
+    return (values - np.min(values)) / span
+
+
+def _normalize_max_abs(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    scale = float(np.max(np.abs(values)))
+    if scale <= 1e-12:
+        return np.zeros_like(values)
+    return values / scale
+
+
 def compute_end_sep(
     cell: CellData,
-    smooth_window: int = 51,
-    plateau_frac: float = 0.95,
-    avg_halfwin: int = 2,
+    smooth_window: int = 50,
+    min_frames_after_neb: int = 50,
+    velocity_threshold: float = 0.1,
 ) -> int:
-    """Detect the first frame where spindle separation reaches its metaphase plateau.
+    """Detect the end of spindle separation using the old MATLAB velocity rule.
 
-    1. Smooth the pole-pole distance with a Savitzky-Golay filter.
-    2. Compute the reference maximum over ``[NEB, midpoint(NEB, AO)]`` — the
-       core metaphase region — to avoid inflation from late pre-anaphase ramp.
-    3. Compute a running average (window = ``2 * avg_halfwin + 1``, default 5
-       frames) of the smoothed distance.
-    4. Return the first frame where that running average reaches *plateau_frac*
-       (default 95%) of the reference maximum.
+    This mirrors the legacy MATLAB logic:
+    1. Smooth the pole-pole distance.
+    2. Normalize the smoothed separation to ``[0, 1]``.
+    3. Differentiate, smooth again, and normalize by its max absolute value.
+    4. Return the first frame where the normalized separation velocity falls
+       below ``velocity_threshold`` at least ``min_frames_after_neb`` frames
+       past NEB.
+
+    To avoid contamination from anaphase onset, only frames strictly before the
+    first AO annotation are used when constructing the separation velocity.
     """
     neb_frame = cell.neb - 1
     ao_frame = _ao_min_index(cell)
-    midpoint_frame = (neb_frame + ao_frame) // 2
 
     distances = pole_pole_distance(cell)
     if distances.size <= 2:
         return max(0, distances.size - 1)
 
-    window = _savgol_window(distances.size, smooth_window)
+    search_stop = min(distances.size, ao_frame)
+    if search_stop <= 1:
+        return max(neb_frame, min(distances.size - 1, max(0, ao_frame - 1)))
+
+    segment = distances[:search_stop]
+    window = _savgol_window(segment.size, smooth_window)
     if window is None:
-        return distances.size - 1
+        smoothed = segment.astype(float, copy=True)
+    else:
+        smoothed = savgol_filter(
+            segment,
+            window_length=window,
+            polyorder=min(3, window - 1),
+        )
 
-    smoothed = savgol_filter(
-        distances,
-        window_length=window,
-        polyorder=min(3, window - 1),
+    normalized_sep = _normalize_range(smoothed)
+    sep_velocity = np.diff(normalized_sep)
+    if sep_velocity.size == 0:
+        return max(neb_frame, search_stop - 1)
+
+    vel_window = _savgol_window(sep_velocity.size, smooth_window)
+    if vel_window is None:
+        smoothed_velocity = sep_velocity.astype(float, copy=True)
+    else:
+        smoothed_velocity = savgol_filter(
+            sep_velocity,
+            window_length=vel_window,
+            polyorder=min(3, vel_window - 1),
+        )
+
+    normalized_velocity = _normalize_max_abs(smoothed_velocity)
+    first_allowed = neb_frame + min_frames_after_neb
+    candidates = np.flatnonzero(
+        (normalized_velocity < velocity_threshold)
+        & (np.arange(normalized_velocity.size) >= first_allowed)
     )
-    # Reference max from the core metaphase region.
-    ref_start = max(0, neb_frame)
-    ref_end = min(midpoint_frame + 1, len(smoothed))
-    metaphase_max = float(smoothed[ref_start:ref_end].max()) if ref_end > ref_start else float(smoothed.max())
-    threshold = plateau_frac * metaphase_max
-
-    # Running average of the smoothed signal.
-    kernel_size = 2 * avg_halfwin + 1
-    kernel = np.ones(kernel_size) / kernel_size
-    running_avg = np.convolve(smoothed, kernel, mode="same")
-
-    candidates = np.flatnonzero(running_avg >= threshold)
     if candidates.size == 0:
-        return max(neb_frame, len(smoothed) - 1)
-    return max(neb_frame, int(candidates[0]))
+        return max(neb_frame, search_stop - 1)
+    return int(candidates[0])
 
 
 def _ao_min_index(cell: CellData) -> int:
@@ -155,7 +188,7 @@ def _compute_endpoint(cell: CellData, method: str, frac: float = 1.0 / 3.0) -> i
 def trim_trajectory(
     cell: CellData,
     method: str = "neb_ao_frac",
-    frac: float = 1.0 / 3.0,
+    frac: float = 0.4,
     min_frames: int = 25,
 ) -> TrimmedCell:
     """Trim cell trajectories to the window ``[NEB, endpoint]``.

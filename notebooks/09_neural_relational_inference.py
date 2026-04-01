@@ -49,7 +49,16 @@ except ImportError as exc:
 
 plt.rcParams["figure.dpi"] = 110
 
-SEED = 0
+# %% [markdown]
+# ## Configuration
+
+# %%
+CONDITION = "rpe18_ctr"          # Control-condition cells used for the NRI comparison.
+DT = 5.0                         # Frame interval in seconds.
+FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
+SEED = 0                         # Global random seed for NumPy and PyTorch.
+HISTORY = 8                      # Number of past frames provided to the graph encoder.
+MIN_VALID_CHROMS = 2             # Minimum tracked chromosomes required to keep a window.
 
 
 def set_seed(seed):
@@ -83,12 +92,9 @@ def mlp(in_dim, hidden_dim, out_dim, depth=2):
 # Same cells and trimming window as the SFI notebooks.
 
 # %%
-CONDITION = "rpe18_ctr"
-DT = 5.0
-
 cells_raw = load_condition(CONDITION)
-cells = [trim_trajectory(c, method="neb_ao_frac") for c in cells_raw]
-print(f"Loaded {len(cells)} cells")
+cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW) for c in cells_raw]
+print(f"Loaded {len(cells)} cells (trimmed to neb_ao_frac={FRAC_NEB_AO_WINDOW:.3f})")
 for cell in cells:
     T, _, N = cell.chromosomes.shape
     print(f"  {cell.cell_id}: {T} frames, {N} chromosomes")
@@ -111,9 +117,6 @@ for cell in cells:
 # maximum chromosome count and carry explicit node masks.
 
 # %%
-HISTORY = 8
-MIN_VALID_CHROMS = 2
-
 TYPE_CHROM = 0
 TYPE_POLE = 1
 
