@@ -14,9 +14,8 @@ build/
 data/*.mat
 data/excluded_*/
 
-# Reference PDFs and text extracts (internal only)
-docs/*.pdf
-docs/*.txt
+# Docs (internal design specs, plans, reference papers)
+docs/
 
 # Results/outputs
 results/
@@ -42,5 +41,4 @@ venv/
 env/
 
 # Internal/temp files
-docs/archive/
 paper_text_temp.txt

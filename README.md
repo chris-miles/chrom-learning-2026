@@ -28,7 +28,6 @@ As independent validation, notebook 09 uses a [Neural Relational Inference](http
   - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1)
   - `09_neural_relational_inference.py` — NRI-lite latent topology inference: variational graph encoder infers which edges matter, independently validating SFI topology (requires `torch`)
 - `data/` — Raw `.mat` trajectory files (not tracked in git)
-- `docs/` — Design spec and planning documents
 
 ## Setup
 
@@ -79,6 +78,3 @@ Model topology is selected using leave-one-cell-out ensemble-mean MSE (simulated
 - **SFI code**: https://github.com/ronceray/StochasticForceInference
 - **NRI**: T. Kipf, E. Fetaya, K.-C. Wang, M. Welling & R. Zemel, *Neural relational inference for interacting systems*, ICML 2018. Code: https://github.com/ethanfetaya/NRI
 
-## Docs
-
-Build-phase design docs, specs, and implementation plans are in `docs/archive/`.
