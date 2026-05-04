@@ -58,23 +58,18 @@ class RolloutCVResult:
     Per-cell arrays have shape ``(n_cells,)``; ``horizon_errors`` has shape
     ``(n_cells, n_horizons)``.
 
-    ``path_mse`` is the expected per-chromosome 3D squared error of a single
-    rollout: MSE is computed for each replicate independently, then averaged
-    across replicates.  This includes both the model's drift bias and its
-    stochastic variance, i.e. it answers "if I run this simulator once, how
-    close is the output to reality?"
+    In **deterministic** mode (``deterministic=True``), a single noise-free
+    ODE rollout is used and ``path_mse == ensemble_mse`` (both are the
+    drift-trajectory MSE).
 
-    ``ensemble_mse`` averages the simulated positions across replicates before
-    comparing to reality.  This cancels model-side stochastic variance,
-    leaving drift bias plus a topology-invariant data-noise floor.  It is
-    a conditional-mean trajectory score (not a full distributional SDE
-    criterion), appropriate when the goal is topology/drift selection.
+    In **stochastic** mode (the default, ``deterministic=False``), ``path_mse`` is the
+    expected per-chromosome 3D squared error of a single rollout (averaged
+    across replicates, includes drift bias + stochastic variance), and
+    ``ensemble_mse`` averages positions across replicates before comparing
+    to reality (cancels stochastic variance, isolates drift bias).
 
     ``horizon_path_mse`` and ``horizon_ensemble_mse`` are the horizon-resolved
-    versions of ``path_mse`` and ``ensemble_mse``, both shape
-    ``(n_cells, n_horizons)``.  These show how the two error types grow with
-    forecast horizon: path MSE saturates quickly at the diffusion noise floor,
-    while ensemble MSE grows more slowly and remains discriminative.
+    versions, both shape ``(n_cells, n_horizons)``.
     """
 
     horizons: np.ndarray
@@ -241,7 +236,7 @@ def bootstrap_kernels(
         for _ in range(n_boot)
     ]
 
-    theta_list = Parallel(n_jobs=n_jobs)(
+    theta_list = Parallel(n_jobs=n_jobs, verbose=1)(
         delayed(_boot_one)(cells, idx, basis_xx, basis_xy, config, roughness)
         for idx in all_indices
     )
@@ -337,13 +332,14 @@ def cross_validate(
     )
 
 
-def _rollout_one(test_cell, model, seed):
+def _rollout_one(test_cell, model, seed, deterministic=False):
     """Run one simulate_cell rep, return chromosomes + spindle-frame arrays."""
     from chromlearn.io.trajectory import spindle_frame
     from chromlearn.model_fitting.simulate import simulate_cell
 
-    rep_rng = np.random.default_rng(seed)
-    _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng)
+    rep_rng = None if deterministic else np.random.default_rng(seed)
+    _, sim_cell = simulate_cell(test_cell, model, rng=rep_rng,
+                                deterministic=deterministic)
     sf = spindle_frame(sim_cell)
     return sim_cell.chromosomes, sf.axial, sf.radial
 
@@ -356,12 +352,18 @@ def rollout_cross_validate(
     rng: np.random.Generator | None = None,
     k_folds: int | None = None,
     n_jobs: int = _DEFAULT_N_JOBS,
+    deterministic: bool = False,
 ) -> RolloutCVResult:
     """Rollout cross-validation (LOO or k-fold).
 
     Each fold fits the model on training cells, simulates each held-out cell
     forward from its real initial conditions while using its real partner
     trajectories, and compares the resulting spindle-frame summaries.
+
+    When *deterministic* is True, a single noise-free ODE rollout replaces
+    the stochastic replicate ensemble.  This scores the drift trajectory
+    directly and is appropriate when the goal is topology/drift selection and
+    the noise model is uncertain.  ``n_reps`` and ``rng`` are ignored.
 
     When *k_folds* is ``None`` or ``>= len(cells)`` this is leave-one-out.
     Otherwise cells are split into *k_folds* groups (using
@@ -422,27 +424,37 @@ def rollout_cross_validate(
             real_axial_mean = np.nanmean(real_sf.axial, axis=1)
             real_radial_mean = np.nanmean(real_sf.radial, axis=1)
 
-            # Pre-generate seeds for reproducibility
-            rep_seeds = [
-                int(rng.integers(0, np.iinfo(np.int64).max))
-                for _ in range(n_reps)
-            ]
+            if deterministic:
+                # Single noise-free ODE rollout
+                sim_chrom, sim_axial, sim_radial = _rollout_one(
+                    test_cell, model, seed=0, deterministic=True,
+                )
+                sim_chroms = [sim_chrom]
+                sim_axials = [sim_axial]
+                sim_radials = [sim_radial]
+            else:
+                # Pre-generate seeds for reproducibility
+                rep_seeds = [
+                    int(rng.integers(0, np.iinfo(np.int64).max))
+                    for _ in range(n_reps)
+                ]
 
-            # Simulate n_reps rollouts (parallel via joblib)
-            results = Parallel(n_jobs=n_jobs)(
-                delayed(_rollout_one)(test_cell, model, s)
-                for s in rep_seeds
-            )
+                # Simulate n_reps rollouts (parallel via joblib)
+                results = Parallel(n_jobs=n_jobs, verbose=1)(
+                    delayed(_rollout_one)(test_cell, model, s)
+                    for s in rep_seeds
+                )
 
-            sim_chroms = [r[0] for r in results]
-            sim_axials = [r[1] for r in results]
-            sim_radials = [r[2] for r in results]
+                sim_chroms = [r[0] for r in results]
+                sim_axials = [r[1] for r in results]
+                sim_radials = [r[2] for r in results]
 
-            # Per-rep path MSE (includes both drift bias and stochastic variance)
+            # Per-rep path MSE (includes both drift bias and stochastic
+            # variance; identical to ensemble_mse when deterministic)
             real_chroms = test_cell.chromosomes  # (T, 3, N)
             rep_mses = []
-            for sim_chrom in sim_chroms:
-                diff_3d = real_chroms - sim_chrom  # (T, 3, N)
+            for sc in sim_chroms:
+                diff_3d = real_chroms - sc  # (T, 3, N)
                 any_nan = np.any(np.isnan(diff_3d), axis=1)  # (T, N)
                 sq_err = np.sum(diff_3d ** 2, axis=1)  # (T, N)
                 sq_err[any_nan] = np.nan
@@ -451,8 +463,7 @@ def rollout_cross_validate(
 
             # Ensemble-mean metric: average simulated positions across reps,
             # then compare to reality.  Cancels model-side stochastic variance.
-            # Use explicit sum/count to avoid warnings on all-NaN slices
-            # (e.g. chromosomes missing at t=0 that stay NaN in every rep).
+            # In deterministic mode this is identical to path_mse (one rep).
             stacked = np.stack(sim_chroms, axis=0)  # (n_reps, T, 3, N)
             ens_sum = np.nansum(stacked, axis=0)
             ens_count = np.sum(np.isfinite(stacked), axis=0)
@@ -526,8 +537,8 @@ def rollout_cross_validate(
 
                 # Horizon-resolved path MSE (average across reps)
                 rep_h_mses = []
-                for sim_chrom in sim_chroms:
-                    diff_h = real_chroms[horizon] - sim_chrom[horizon]  # (3, N)
+                for sc in sim_chroms:
+                    diff_h = real_chroms[horizon] - sc[horizon]  # (3, N)
                     sq_h = np.sum(diff_h ** 2, axis=0)  # (N,)
                     sq_h[np.any(np.isnan(diff_h), axis=0)] = np.nan
                     rep_h_mses.append(float(np.nanmean(sq_h)))
@@ -547,6 +558,169 @@ def rollout_cross_validate(
         horizon_errors=horizon_errors,
         horizon_path_mse=horizon_path_mse,
         horizon_ensemble_mse=horizon_ensemble_mse,
+    )
+
+
+@dataclass
+class ForecastHorizonResult:
+    """Rolling-window forecast horizon validation.
+
+    For each horizon h, the model is re-initialized from the real positions at
+    each frame t0, simulated forward h steps, and compared to reality at t0+h.
+    This answers "over what timescales is the model accurate?" in contrast to
+    the from-NEB rollout which answers "when does the model break down?"
+
+    ``ensemble_mse``: shape ``(n_cells, n_horizons)`` -- MSE of the ensemble-mean
+    forecast (averaged across reps before measuring error, cancelling stochastic
+    variance).
+
+    ``path_mse``: shape ``(n_cells, n_horizons)`` -- MSE of individual rollouts
+    (includes stochastic variance).
+    """
+
+    horizons: np.ndarray
+    ensemble_mse: np.ndarray
+    path_mse: np.ndarray
+
+
+def _forecast_window_one(test_cell, model, t0, h, seed, deterministic=False):
+    """Simulate h steps from real positions at t0, return simulated chroms at t0+h."""
+    from chromlearn.io.trajectory import get_partners
+    from chromlearn.model_fitting.simulate import kernel_callables, simulate_trajectories
+
+    rep_rng = None if deterministic else np.random.default_rng(seed)
+    kernel_xx, kernel_xy = kernel_callables(model)
+    partners = get_partners(test_cell, model.topology)
+
+    # Slice partner positions for this window
+    partner_window = partners[:, t0:t0 + h + 1, :]
+    x0 = test_cell.chromosomes[t0].T  # (N, 3)
+
+    traj = simulate_trajectories(
+        kernel_xx=kernel_xx,
+        kernel_xy=kernel_xy,
+        partner_positions=partner_window,
+        x0=x0,
+        n_steps=h,
+        dt=test_cell.dt,
+        D_x=model.D_x,
+        rng=rep_rng,
+        deterministic=deterministic,
+    )
+    return traj[h]  # (3, N) at the forecast endpoint
+
+
+def forecast_horizon_cross_validate(
+    cells: list[TrimmedCell],
+    config: FitConfig,
+    horizons: tuple[int, ...] = (1, 3, 5, 10, 20),
+    n_reps: int = 8,
+    rng: np.random.Generator | None = None,
+    n_jobs: int = _DEFAULT_N_JOBS,
+    deterministic: bool = False,
+) -> ForecastHorizonResult:
+    """Rolling-window forecast cross-validation.
+
+    For each held-out cell and each horizon h, re-initialize from the real
+    positions at every valid starting frame t0, simulate h steps forward
+    (using real partner trajectories), and compare to reality at t0+h.
+
+    This gives a clean forecast-horizon curve showing "over what timescales
+    is the model accurate?" independent of trajectory position.
+
+    When *deterministic* is True, a single noise-free ODE forecast replaces
+    the stochastic replicate ensemble.  ``n_reps`` and ``rng`` are ignored.
+
+    Uses common random numbers (seeded per fold) across topologies when
+    called with the same rng seed.  Cell-level weighting: each cell
+    contributes equally regardless of trajectory length.
+    """
+    if not cells:
+        raise ValueError("forecast_horizon_cross_validate requires at least one cell.")
+    if rng is None:
+        rng = np.random.default_rng()
+
+    horizon_values = np.array(sorted({int(h) for h in horizons if int(h) > 0}), dtype=int)
+    n_cells = len(cells)
+    max_h = int(horizon_values.max())
+
+    ens_mse = np.full((n_cells, horizon_values.size), np.nan, dtype=np.float64)
+    path_mse_arr = np.full((n_cells, horizon_values.size), np.nan, dtype=np.float64)
+
+    for i in range(n_cells):
+        train_cells = [c for j, c in enumerate(cells) if j != i]
+        model = fit_model(train_cells, config)
+        test_cell = cells[i]
+        T = test_cell.chromosomes.shape[0]
+
+        for hi, h in enumerate(horizon_values):
+            if h >= T:
+                continue
+
+            # Valid starting frames: 0 to T-h-1
+            n_windows = T - h
+            eff_reps = 1 if deterministic else n_reps
+
+            if deterministic:
+                # Single ODE forecast per window -- no joblib overhead
+                results = [
+                    _forecast_window_one(test_cell, model, t0, h, seed=0,
+                                         deterministic=True)
+                    for t0 in range(n_windows)
+                ]
+            else:
+                seeds = [int(rng.integers(0, np.iinfo(np.int64).max))
+                         for _ in range(n_windows * eff_reps)]
+
+                # Run all (window, rep) combinations in parallel
+                jobs = []
+                for t0 in range(n_windows):
+                    for rep in range(eff_reps):
+                        seed_idx = t0 * eff_reps + rep
+                        jobs.append(delayed(_forecast_window_one)(
+                            test_cell, model, t0, h, seeds[seed_idx]
+                        ))
+
+                results = Parallel(n_jobs=n_jobs, verbose=1)(jobs)
+
+            # Reshape: (n_windows, eff_reps) each element is (3, N)
+            window_path_mses = []
+            window_ens_mses = []
+
+            for t0 in range(n_windows):
+                real_chroms_h = test_cell.chromosomes[t0 + h]  # (3, N)
+                rep_sims = []
+                rep_mses = []
+                for rep in range(eff_reps):
+                    sim_h = results[t0 * eff_reps + rep]  # (3, N)
+                    rep_sims.append(sim_h)
+                    diff = real_chroms_h - sim_h
+                    sq = np.sum(diff ** 2, axis=0)
+                    sq[np.any(np.isnan(diff), axis=0)] = np.nan
+                    rep_mses.append(float(np.nanmean(sq)))
+
+                window_path_mses.append(float(np.mean(rep_mses)))
+
+                # Ensemble mean across reps (identical to single rep when deterministic)
+                stacked = np.stack(rep_sims, axis=0)  # (eff_reps, 3, N)
+                ens_count = np.sum(np.isfinite(stacked), axis=0)
+                safe_count = np.where(ens_count > 0, ens_count, 1.0)
+                ens_mean = np.where(ens_count > 0,
+                                    np.nansum(stacked, axis=0) / safe_count,
+                                    np.nan)
+                ens_diff = real_chroms_h - ens_mean
+                ens_sq = np.sum(ens_diff ** 2, axis=0)
+                ens_sq[np.any(np.isnan(ens_diff), axis=0)] = np.nan
+                window_ens_mses.append(float(np.nanmean(ens_sq)))
+
+            # Average across windows (equal window weighting within each cell)
+            path_mse_arr[i, hi] = float(np.nanmean(window_path_mses))
+            ens_mse[i, hi] = float(np.nanmean(window_ens_mses))
+
+    return ForecastHorizonResult(
+        horizons=horizon_values,
+        ensemble_mse=ens_mse,
+        path_mse=path_mse_arr,
     )
 
 

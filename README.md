@@ -8,8 +8,6 @@ Infers effective distance-dependent forces between chromosomes (and from centros
 
 The core method treats chromosome motion as overdamped Langevin dynamics driven by pairwise radial forces. SFI projects the observed velocity field onto a basis of pairwise interaction functions and solves for the coefficients via penalized linear regression, recovering the effective force law without assuming a parametric model. We expand the interaction kernels in a B-spline basis and compare candidate interaction topologies (which pairs of particles interact) via leave-one-out cross-validation.
 
-As independent validation, notebook 09 uses a [Neural Relational Inference](https://github.com/ethanfetaya/NRI) (NRI) approach: a variational graph encoder infers a latent interaction graph from trajectory windows, checking whether a neural model independently recovers the same topology.
-
 ## Structure
 
 - `chromlearn/` — Python package
@@ -19,14 +17,15 @@ As independent validation, notebook 09 uses a [Neural Relational Inference](http
 - `notebooks/` — Jupytext percent-format `.py` notebooks (source of truth for all edits)
   - `ipynb/` — Auto-generated `.ipynb` files for GitHub rendering (may be out of date; regenerate with `bash scripts/execute_notebooks.sh`)
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
-  - `02_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time (binned comparison, effect sizes, chromosome-level permutation test)
-  - `03_chromosomes_follow_centrosomes.py` — Justification for treating centrosomes as autonomous inputs (lag correlation, model comparison, forward simulation, physics argument)
-  - `04_model_selection.py` — Compares 5 interaction topologies via leave-one-cell-out CV (primary: ensemble-mean MSE with paired foldwise Δ/SE(Δ); supporting: per-rep path MSE, 1-step velocity MSE, W1, horizon-resolved error curves), metric concordance analysis, kernel plausibility, forward simulation, and PCA-space trajectory comparison (real vs rollout)
-  - `05_robustness.py` — Hyperparameter sensitivity: joint (n_basis, ridge, roughness) grid sweep, estimator mode, endpoint method, diffusion estimation
-  - `06_diffusion_landscape.py` — Spatially-varying diffusion D(x): multi-estimator comparison, per-cell consistency, coordinate axis comparison
-  - `07_per_cell_heterogeneity.py` — Per-cell kernel variability vs pooled bootstrap uncertainty, correlation with cell features
-  - `08_cross_condition.py` — Cross-condition kernel comparison (control, Rod, CENP-E, PRC1)
-  - `09_neural_relational_inference.py` — NRI-lite latent topology inference: variational graph encoder infers which edges matter, independently validating SFI topology (requires `torch`)
+  - `02_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time
+  - `02b_explore_chrom_pole_asymm.py`, `02c_chrom_pole_projection_test.py` — Pole/chromosome asymmetry diagnostics
+  - `03_chromosomes_follow_centrosomes.py` — Lag correlation, model comparison, forward simulation, physics argument (Fig 3 panels A, B)
+  - `03b_force_partition_reconciliation.py` — Reconciles `02c` lab-frame and `03` regression views of the chromosome-pole force partition
+  - `04_model_selection.py` — Compares 5 interaction topologies via leave-one-cell-out CV. **Primary criterion**: deterministic drift-rollout ensemble MSE at horizon `H_PRIMARY = 10` frames (50 s). Supporting: 1-step velocity MSE, W1, horizon-resolved curves (1-30 frames, supplement)
+  - `05_robustness.py` — Hyperparameter sensitivity: (n_basis, lambda_rough) joint grid, estimator mode, endpoint method. `lambda_ridge` is fixed at `1e-6` (numerical jitter only); we don't interpret individual basis coefficients, so coefficient sparsity is not a goal
+  - `06_diffusion_landscape.py` — Spatially-varying diffusion D(x): multi-estimator comparison, per-cell consistency (Fig 3 panel D)
+  - `07_per_cell_heterogeneity.py` — Per-cell kernel variability vs pooled bootstrap uncertainty
+  - `archive/` — Notebooks out of scope for the current paper (`08_cross_condition.py`, `09_neural_relational_inference.py`, `debug_centering_vs_frac.py`)
 - `data/` — Raw `.mat` trajectory files (not tracked in git)
 
 ## Setup
@@ -68,13 +67,14 @@ All options are configured via `FitConfig` (see `chromlearn/model_fitting/__init
 
 This project uses SFI-inspired projection inference with cross-validated interaction topologies. We fit pairwise radial kernels via penalized regression (as in SFI's projection framework) but differ from the full SFI/PASTIS pipeline in two ways: (1) model selection compares a small set of physically motivated topologies rather than sparse selection over a large basis library, and (2) spatially varying diffusion D(x) is estimated in a second stage from residuals rather than jointly inferred. Notebook 06 validates that the diffusion-gradient correction is negligible for our data.
 
-Model topology is selected using leave-one-cell-out ensemble-mean MSE (simulated positions averaged across replicates before comparing to reality, cancelling model-side stochastic variance) as the primary criterion. Paired foldwise differences (Δ/SE(Δ)) quantify whether gaps between topologies are statistically meaningful, with a parsimony rule favoring simpler models when the gap is within ~1 SE. Per-rep path MSE, one-step velocity MSE, endpoint mismatch, final-frame Wasserstein, and horizon-specific errors are reported as supporting diagnostics. Horizon-resolved curves for both path MSE and ensemble MSE show the diffusion noise floor and illustrate why ensemble MSE is more discriminative. Rollout CV uses common random numbers across topologies. Kernel plausibility checks and NRI analysis provide additional evidence. Basis domains are fixed a priori from imaging resolution and spindle geometry.
+Model topology is selected using leave-one-cell-out deterministic drift-rollout ensemble MSE at a fixed forecast horizon `H_PRIMARY = 10` frames (50 s with dt=5 s) as the primary criterion. This matches the standard held-out metric across the dynamics-learning literature (NRI 2018, Latent ODE 2019, ODE2VAE 2019 all report MSE at fixed multi-step horizons). Paired foldwise differences (Δ/SE(Δ)) quantify whether gaps between topologies are statistically meaningful, with a parsimony rule favoring simpler models when the gap is within ~1 SE. The full horizon-resolved curve (1-30 frames) is reported as a sweep diagnostic for the supplement. One-step velocity MSE, endpoint mismatch, and final-frame Wasserstein are reported as supporting diagnostics. Rollout CV uses common random numbers across topologies. Basis domains are fixed a priori from imaging resolution and spindle geometry.
 
 ### References
 
-- **SFI (OLI)**: A. Frishman & P. Ronceray, *Learning force fields from stochastic trajectories*, Phys. Rev. X 10, 021009 (2020).
+- **SFI**: A. Frishman & P. Ronceray, *Learning force fields from stochastic trajectories*, Phys. Rev. X 10, 021009 (2020).
 - **ULI**: D. B. Bruckner, P. Ronceray & C. P. Broedersz, *Inferring the dynamics of underdamped stochastic systems*, Phys. Rev. Lett. 125, 058103 (2020).
 - **PASTIS**: A. Gerardos & P. Ronceray, *Parsimonious model selection for stochastic dynamics*, arXiv:2501.10339 (2025).
 - **SFI code**: https://github.com/ronceray/StochasticForceInference
-- **NRI**: T. Kipf, E. Fetaya, K.-C. Wang, M. Welling & R. Zemel, *Neural relational inference for interacting systems*, ICML 2018. Code: https://github.com/ethanfetaya/NRI
+- **NRI** (held-out metric reference): T. Kipf, E. Fetaya, K.-C. Wang, M. Welling & R. Zemel, *Neural relational inference for interacting systems*, ICML 2018.
+- **Latent ODE**: Y. Rubanova, R. T. Q. Chen & D. Duvenaud, *Latent ODEs for irregularly-sampled time series*, NeurIPS 2019.
 

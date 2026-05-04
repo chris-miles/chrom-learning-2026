@@ -42,3 +42,16 @@ env/
 
 # Internal/temp files
 paper_text_temp.txt
+
+# Archived notebooks (kept on disk for reference, not in git)
+notebooks/archive/
+
+# Internal docs / drafts / reference attachments not for the public repo
+*.docx
+*.pdf
+alex_email_*.txt
+output.png
+
+# Auto-generated notebook artifacts beyond the .ipynb checked in for rendering
+notebooks/ipynb/*.html
+notebooks/ipynb/*.pdf

@@ -60,7 +60,7 @@ class FitConfig:
     r_min_xy: float = 0.5
     r_max_xy: float = 12.0
     basis_type: str = "bspline"
-    lambda_ridge: float = 1e-3
+    lambda_ridge: float = 1e-6  # Numerical jitter only; not a tuning knob.
     lambda_rough: float = 1.0
     dt: float = 5.0
     d: int = 3

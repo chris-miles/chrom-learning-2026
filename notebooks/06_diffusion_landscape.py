@@ -55,8 +55,8 @@ N_BASIS_XY = 10                  # Number of spline basis functions for pole-chr
 R_MIN = 0.3                      # Lower basis cutoff in microns.
 R_MAX = 15.0                     # Upper basis cutoff in microns.
 BASIS_TYPE = "bspline"           # Functional basis used for the learned kernels.
-LAMBDA_RIDGE = 1e-3              # L2 penalty on coefficient magnitude.
-LAMBDA_ROUGH = 1.0               # Smoothness penalty on neighboring spline coefficients.
+LAMBDA_RIDGE = 1e-6              # Fixed numerical jitter; not a tuning knob.
+LAMBDA_ROUGH = 1.0               # Integrated 2nd-derivative penalty (controls kernel smoothness).
 BASIS_EVAL_MODE = "ito"          # Drift-evaluation convention used in the fit.
 DT = 5.0                         # Frame interval in seconds.
 
@@ -137,7 +137,21 @@ R_MAX_D = 12.0
 LAMBDA_D = 1e-2
 
 basis_D = BSplineBasis(R_MIN_D, R_MAX_D, N_BASIS_D)
-eval_coords = np.linspace(R_MIN_D, R_MAX_D, 200)
+
+# Restrict the plot range to where data actually exists. The fit basis spans
+# [R_MIN_D, R_MAX_D] but cells rarely reach the upper end, and the unconstrained
+# ridge solution can extrapolate into the negative on the sparse tail. We use
+# the 1st-99th percentile of the empirical distance distribution.
+_coord_fn = COORDINATE_MAPS[D_COORD]
+_all_coords = np.concatenate(
+    [_coord_fn(c.chromosomes, c).ravel() for c in cells]
+)
+_all_coords = _all_coords[np.isfinite(_all_coords)]
+EVAL_LO, EVAL_HI = np.quantile(_all_coords, [0.01, 0.99])
+EVAL_LO = max(EVAL_LO, R_MIN_D)
+EVAL_HI = min(EVAL_HI, R_MAX_D)
+eval_coords = np.linspace(EVAL_LO, EVAL_HI, 200)
+print(f"D(x) plot range clipped to data quantiles: [{EVAL_LO:.2f}, {EVAL_HI:.2f}] um")
 
 diff_results: dict[str, DiffusionResult] = {}
 for est in ESTIMATORS:
@@ -177,11 +191,129 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# **Note on negativity:** The D(x) curves above come from unconstrained ridge
-# regression on noisy local-D estimates, so they can dip slightly below zero at
-# domain margins.  This is a smoothing artifact, not physical; for literal
-# diffusion interpretation, treat small negative values as consistent with zero.
+# **Note on plot range:** The fit basis spans the full ``[R_MIN_D, R_MAX_D]``
+# domain, but cells rarely visit the upper end of that range, and the
+# unconstrained ridge solution can extrapolate into the negative on the sparse
+# tail. The plot above is clipped to the empirical 1-99 percentile of the
+# distance distribution so the displayed curves correspond to coordinates that
+# are actually sampled by the data.
 #
+# ## Drift vs diffusion: how much of one-step motion is deterministic?
+#
+# For overdamped Langevin dynamics dX = F dt + sqrt(2 D dt) dW, the expected
+# squared one-step displacement decomposes into a deterministic and a
+# stochastic part:
+#
+#     E[|dX|^2] = |F|^2 dt^2 + 6 D dt   (3D)
+#
+# Three equivalent dimensionless and length quantities summarize how strongly
+# drift dominates over diffusion at one time step:
+#
+# - **Drift fraction**: f_drift = |F|^2 dt / (|F|^2 dt + 6 D), in [0, 1].
+#   Fraction of one-step squared displacement that is deterministic.
+# - **One-step Peclet number**: Pe = |F| sqrt(dt / (2 D)). Pe >> 1 means drift
+#   dominates, Pe << 1 means diffusion dominates.
+# - **Crossover length**: L* = 2 D / |F|. Length scale below which diffusive
+#   motion competes with drift; compare to spindle dimensions (~10 um).
+#
+# We use the fitted drift field |F(x)| (kernels evaluated at every real
+# chromosome position over all timepoints) and the scalar D from the
+# residual MSD.
+
+# %%
+from chromlearn.model_fitting.diffusion import _predicted_force
+
+force_mags_chunks = []
+distances_chunks = []
+for cell in cells:
+    coord_arr = COORDINATE_MAPS[D_COORD](cell.chromosomes, cell)  # (T, N)
+    T_cell = cell.chromosomes.shape[0]
+    for t in range(T_cell):
+        F = _predicted_force(
+            cell, t,
+            fit_result=model,
+            basis_xx=model.basis_xx,
+            basis_xy=model.basis_xy,
+            topology=model.topology,
+            r_cutoff_xx=model.r_cutoff_xx,
+        )
+        Fmag = np.linalg.norm(F, axis=1)  # (N,)
+        valid = np.isfinite(Fmag) & np.isfinite(coord_arr[t])
+        force_mags_chunks.append(Fmag[valid])
+        distances_chunks.append(coord_arr[t][valid])
+
+force_mags = np.concatenate(force_mags_chunks)
+distances_force = np.concatenate(distances_chunks)
+
+D_scalar = model.D_x
+dt_step = config.dt
+f_drift_all = (force_mags ** 2 * dt_step) / (force_mags ** 2 * dt_step + 6.0 * D_scalar)
+Pe_all = force_mags * np.sqrt(dt_step / (2.0 * D_scalar))
+L_star_all = 2.0 * D_scalar / np.maximum(force_mags, 1e-12)
+
+print(f"Sample size: {force_mags.size:,} (chromosome x timepoint)")
+print(f"Scalar D = {D_scalar:.4f} um^2/s, dt = {dt_step:.1f} s")
+print()
+print("                     median       IQR")
+for name, vals, fmt in [
+    ("|F| (um/s)",      force_mags,  "{:.4f}"),
+    ("f_drift",         f_drift_all, "{:.3f}"),
+    ("Peclet (1-step)", Pe_all,      "{:.2f}"),
+    ("L* (um)",         L_star_all,  "{:.3f}"),
+]:
+    q25, q50, q75 = np.quantile(vals, [0.25, 0.5, 0.75])
+    print(f"  {name:<18} {fmt.format(q50):>8}    [{fmt.format(q25)}, {fmt.format(q75)}]")
+
+# %%
+# Distance-binned medians of f_drift, Pe, L*
+N_BINS = 16
+bin_edges = np.linspace(EVAL_LO, EVAL_HI, N_BINS + 1)
+bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+bin_idx = np.clip(np.digitize(distances_force, bin_edges) - 1, 0, N_BINS - 1)
+
+
+def _binmedian(values: np.ndarray, idx: np.ndarray, n_bins: int) -> np.ndarray:
+    out = np.full(n_bins, np.nan)
+    for b in range(n_bins):
+        mask = (idx == b) & np.isfinite(values)
+        if mask.any():
+            out[b] = np.median(values[mask])
+    return out
+
+
+f_drift_med = _binmedian(f_drift_all, bin_idx, N_BINS)
+Pe_med = _binmedian(Pe_all, bin_idx, N_BINS)
+L_star_med = _binmedian(L_star_all, bin_idx, N_BINS)
+
+fig2, axes2 = plt.subplots(1, 3, figsize=(15, 4.2))
+axes2[0].plot(bin_centers, f_drift_med, "o-", color="C3")
+axes2[0].axhline(0.5, color="0.6", linestyle="--", linewidth=0.8, label="50/50")
+axes2[0].set_ylim(0, 1)
+axes2[0].set_xlabel("Distance from spindle center (um)")
+axes2[0].set_ylabel("f_drift")
+axes2[0].set_title("Deterministic fraction of 1-step MSD")
+axes2[0].legend(fontsize=8)
+
+axes2[1].plot(bin_centers, Pe_med, "o-", color="C0")
+# Pe = |F| sqrt(dt/2D) compares per-coordinate drift and diffusion. For the
+# 3D total-MSD 50/50 crossover (matching f_drift = 0.5) the threshold is
+# Pe = sqrt(3) ~= 1.73.
+axes2[1].axhline(np.sqrt(3.0), color="0.6", linestyle="--", linewidth=0.8,
+                 label="Pe = sqrt(3) (3D 50/50)")
+axes2[1].set_xlabel("Distance from spindle center (um)")
+axes2[1].set_ylabel("Peclet number (1-step)")
+axes2[1].set_title("Pe = |F| sqrt(dt / 2D)")
+axes2[1].legend(fontsize=8)
+
+axes2[2].plot(bin_centers, L_star_med, "o-", color="C2")
+axes2[2].set_xlabel("Distance from spindle center (um)")
+axes2[2].set_ylabel("L* = 2D / |F| (um)")
+axes2[2].set_title("Drift-diffusion crossover length")
+
+fig2.tight_layout()
+plt.show()
+
+# %% [markdown]
 # ## Per-cell D(x) consistency
 #
 # We check whether the spatial gradient is consistent across individual cells

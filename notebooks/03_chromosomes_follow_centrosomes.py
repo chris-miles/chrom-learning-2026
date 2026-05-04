@@ -145,14 +145,14 @@ print(f"Peak correlation value: {lag_result.median[peak_idx]:.3f}")
 # chromosome feedback is not a missing ingredient and we can treat
 # centrosome positions as given/external when modeling chromosome dynamics.
 #
-# Note: the pole-separation term $f_{cc}$ is an *effective* force that
+# Note: the pole-separation term $f_{pp}$ is an *effective* force that
 # absorbs all contributions driving pole separation (including cortical
-# pulling forces, motor-driven sliding, etc.) — it is not a literal
+# pulling forces, motor-driven sliding, etc.) -- it is not a literal
 # pole-pole interaction.
 #
 # We fit centrosome velocity using two potential force sources:
-# - $f_{cc}(r)$: effective pole-separation force (distance-dependent)
-# - $f_{xc}(r)$: chromosome-on-centrosome (all 46 chromosomes acting on each pole)
+# - $f_{pp}(r)$: effective pole-separation force (distance-dependent)
+# - $f_{cp}(r)$: chromosome-on-pole (all 46 chromosomes acting on each pole)
 #
 # and compare how much each contributes.
 
@@ -165,22 +165,14 @@ LAMBDA_RIDGE = 1e-3
 LAMBDA_ROUGH = 1.0
 
 
-def _padded_domain(values, pad_frac=0.10):
-    """Return a data-driven basis domain with a small safety margin."""
-    vals = np.asarray(values, dtype=float)
-    vals = vals[np.isfinite(vals)]
-    if vals.size == 0:
-        raise ValueError("Cannot build a basis domain from an empty sample.")
-    lo = float(vals.min())
-    hi = float(vals.max())
-    span = hi - lo
-    pad = pad_frac * span if span > 0 else pad_frac * max(abs(hi), 1.0)
-    return max(1e-6, lo - pad), hi + pad
+# Fixed a priori basis domains (same as nb04) to avoid leaking held-out
+# cell information into the basis during cross-validation.
+R_MIN = 0.3   # um -- tracking resolution floor
+R_MAX = 15.0  # um -- conservative spindle-scale upper bound
 
-
-# Use the actual distance support in this trimmed dataset, with a small pad.
+# Collect empirical distances for plotting and sanity checks only.
 all_pp_dists = []
-all_xp_dists = []
+all_cp_dists = []
 for cell in cells:
     pp = np.linalg.norm(cell.centrioles[:, :, 1] - cell.centrioles[:, :, 0], axis=1)
     all_pp_dists.extend(pp)
@@ -196,22 +188,22 @@ for cell in cells:
         for p in range(2):
             delta = chroms_valid - poles[t, p]
             dist = np.linalg.norm(delta, axis=1)
-            all_xp_dists.extend(dist[dist > 1e-12])
+            all_cp_dists.extend(dist[dist > 1e-12])
 
 all_pp_dists = np.array(all_pp_dists)
-all_xp_dists = np.array(all_xp_dists)
+all_cp_dists = np.array(all_cp_dists)
 
 # Build a small regression for centrosome velocity.
 # Each centrosome's velocity at each timepoint is one observation (3 rows for x,y,z).
-# Features: f_cc(pole-pole distance) * direction + sum_j f_xc(r_jp) * direction_jp
+# Features: f_pp(pole-pole distance) * direction + sum_j f_cp(r_jp) * direction_jp
 
-n_basis_cc = 6
-n_basis_xc = 6
-basis_cc = BSplineBasis(*_padded_domain(all_pp_dists), n_basis_cc)
-basis_xc = BSplineBasis(*_padded_domain(all_xp_dists), n_basis_xc)
-R_cc = basis_cc.roughness_matrix()
-R_xc = basis_xc.roughness_matrix()
-R_full = block_diag(R_cc, R_xc)
+n_basis_pp = 6
+n_basis_cp = 6
+basis_pp = BSplineBasis(R_MIN, R_MAX, n_basis_pp)
+basis_cp = BSplineBasis(R_MIN, R_MAX, n_basis_cp)
+R_pp = basis_pp.roughness_matrix()
+R_cp = basis_cp.roughness_matrix()
+R_full = block_diag(R_pp, R_cp)
 
 G_rows = []
 V_rows = []
@@ -229,30 +221,30 @@ for cell in cells:
         for p in range(2):
             pole_vel = (poles_next[p] - poles_cur[p]) / dt  # (3,)
 
-            # cc: force from the other pole
+            # pp: force from the other pole
             other = 1 - p
-            delta_cc = poles_cur[other] - poles_cur[p]
-            r_cc = np.linalg.norm(delta_cc)
-            if r_cc < 1e-12:
+            delta_pp = poles_cur[other] - poles_cur[p]
+            r_pp_val = np.linalg.norm(delta_pp)
+            if r_pp_val < 1e-12:
                 continue
-            dir_cc = delta_cc / r_cc
-            phi_cc = basis_cc.evaluate(np.array([r_cc]))[0]  # (n_basis_cc,)
-            g_cc = dir_cc[:, np.newaxis] * phi_cc[np.newaxis, :]  # (3, n_basis_cc)
+            dir_pp = delta_pp / r_pp_val
+            phi_pp = basis_pp.evaluate(np.array([r_pp_val]))[0]  # (n_basis_pp,)
+            g_pp = dir_pp[:, np.newaxis] * phi_pp[np.newaxis, :]  # (3, n_basis_pp)
 
-            # xc: force from all chromosomes
-            g_xc = np.zeros((3, n_basis_xc))
+            # cp: force from all chromosomes on this pole
+            g_cp = np.zeros((3, n_basis_cp))
             valid_chroms = ~np.any(np.isnan(chroms), axis=1)
             if valid_chroms.any():
                 chroms_valid = chroms[valid_chroms]
-                delta_xc = chroms_valid - poles_cur[p]  # (n_valid, 3)
-                dist_xc = np.linalg.norm(delta_xc, axis=1)
-                pair_ok = dist_xc > 1e-12
+                delta_cp = chroms_valid - poles_cur[p]  # (n_valid, 3)
+                dist_cp = np.linalg.norm(delta_cp, axis=1)
+                pair_ok = dist_cp > 1e-12
                 if pair_ok.any():
-                    dir_xc = delta_xc[pair_ok] / dist_xc[pair_ok, np.newaxis]
-                    phi_xc = basis_xc.evaluate(dist_xc[pair_ok])  # (n_ok, n_basis_xc)
-                    g_xc = np.einsum("id,ib->db", dir_xc, phi_xc)  # (3, n_basis_xc)
+                    dir_cp = delta_cp[pair_ok] / dist_cp[pair_ok, np.newaxis]
+                    phi_cp = basis_cp.evaluate(dist_cp[pair_ok])  # (n_ok, n_basis_cp)
+                    g_cp = np.einsum("id,ib->db", dir_cp, phi_cp)  # (3, n_basis_cp)
 
-            row = np.hstack([g_cc, g_xc])  # (3, n_basis_cc + n_basis_xc)
+            row = np.hstack([g_pp, g_cp])  # (3, n_basis_pp + n_basis_cp)
             G_rows.append(row)
             V_rows.append(pole_vel)
 
@@ -263,14 +255,14 @@ print(f"Centrosome design matrix: {G_cent.shape[0]} rows, {G_cent.shape[1]} colu
 # %% [markdown]
 # ### Fit and compare models
 #
-# 1. **Full model**: both $f_{cc}$ and $f_{xc}$
-# 2. **cc-only model**: centrosome-centrosome interaction alone
-# 3. **xc-only model**: chromosome-on-centrosome interaction alone
+# 1. **Full model**: both $f_{pp}$ and $f_{cp}$
+# 2. **pp-only model**: pole-pole interaction alone
+# 3. **cp-only model**: chromosome-on-pole interaction alone
 
 # %%
-n_cc = n_basis_cc
-n_xc = n_basis_xc
-I_full = np.eye(n_cc + n_xc)
+n_pp = n_basis_pp
+n_cp = n_basis_cp
+I_full = np.eye(n_pp + n_cp)
 
 
 def ridge_fit(G, V, R=None, lam=LAMBDA_RIDGE, lam_rough=LAMBDA_ROUGH):
@@ -288,29 +280,57 @@ theta_full, res_full = ridge_fit(G_cent, V_cent, R=R_full)
 ss_res_full = np.sum(res_full**2)
 ss_tot = np.sum((V_cent - V_cent.mean()) ** 2)
 
-# cc-only model
-G_cc_only = G_cent[:, :n_cc]
-theta_cc, res_cc = ridge_fit(G_cc_only, V_cent, R=R_cc)
-ss_res_cc = np.sum(res_cc**2)
+# pp-only model
+G_pp_only = G_cent[:, :n_pp]
+theta_pp, res_pp = ridge_fit(G_pp_only, V_cent, R=R_pp)
+ss_res_pp = np.sum(res_pp**2)
 
-# xc-only model
-G_xc_only = G_cent[:, n_cc:]
-theta_xc, res_xc = ridge_fit(G_xc_only, V_cent, R=R_xc)
-ss_res_xc = np.sum(res_xc**2)
+# cp-only model
+G_cp_only = G_cent[:, n_pp:]
+theta_cp, res_cp = ridge_fit(G_cp_only, V_cent, R=R_cp)
+ss_res_cp = np.sum(res_cp**2)
 
 r2_full = 1 - ss_res_full / ss_tot
-r2_cc = 1 - ss_res_cc / ss_tot
-r2_xc = 1 - ss_res_xc / ss_tot
+r2_pp = 1 - ss_res_pp / ss_tot
+r2_cp = 1 - ss_res_cp / ss_tot
 
-print(f"R² (full, cc + xc):     {r2_full:.4f}")
-print(f"R² (cc only):           {r2_cc:.4f}")
-print(f"R² (xc only):           {r2_xc:.4f}")
-print(f"R² improvement from adding xc to cc: {r2_full - r2_cc:.4f}")
+print(f"R² (full, pp + cp):     {r2_full:.4f}")
+print(f"R² (pp only):           {r2_pp:.4f}")
+print(f"R² (cp only):           {r2_cp:.4f}")
+print(f"R² improvement from adding cp to pp: {r2_full - r2_pp:.4f}")
+
+# %% [markdown]
+# ### Force decomposition in the combined model
+#
+# In the full (pp+cp) model the predicted velocity is a linear sum of
+# pole-pole and chromosome-pole contributions.  We compute the
+# per-observation magnitude of each component and report what fraction
+# of the total predicted force is attributable to each.
+
+# %%
+# Predicted velocity contributions from the full model (3-vectors per obs)
+v_pp_component = (G_cent[:, :n_pp] @ theta_full[:n_pp]).reshape(-1, 3)
+v_cp_component = (G_cent[:, n_pp:] @ theta_full[n_pp:]).reshape(-1, 3)
+
+mag_pp = np.linalg.norm(v_pp_component, axis=1)
+mag_cp = np.linalg.norm(v_cp_component, axis=1)
+mag_total = mag_pp + mag_cp
+
+# Avoid division by zero for any zero-velocity observations
+safe_total = np.where(mag_total > 0, mag_total, 1.0)
+frac_pp = mag_pp / safe_total
+frac_cp = mag_cp / safe_total
+
+print("Force decomposition in the combined (pp+cp) model:")
+print(f"  Mean |F_pp| / (|F_pp| + |F_cp|) = {frac_pp.mean():.1%}")
+print(f"  Mean |F_cp| / (|F_pp| + |F_cp|) = {frac_cp.mean():.1%}")
+print(f"  Median pp fraction:                {np.median(frac_pp):.1%}")
+print(f"  Mean |F_pp| = {mag_pp.mean():.4f} um/s,  mean |F_cp| = {mag_cp.mean():.4f} um/s")
 
 # %% [markdown]
 # ### Effect size (primary) and F-test (heuristic)
 #
-# Cohen's $f^2$ measures how much variance the xc terms add, independent
+# Cohen's $f^2$ measures how much variance the cp terms add, independent
 # of sample size.  We also report an F-test for reference, but it should
 # be treated as heuristic: the observations are autocorrelated within
 # cells and the fits are ridge-regularized, so the classical p-value is
@@ -320,15 +340,15 @@ print(f"R² improvement from adding xc to cc: {r2_full - r2_cc:.4f}")
 from scipy.stats import f as f_dist
 
 n_obs = G_cent.shape[0]
-p_cc_model = n_cc
-p_full_model = n_cc + n_xc
-F_stat = ((ss_res_cc - ss_res_full) / (p_full_model - p_cc_model)) / (
+p_cc_model = n_pp
+p_full_model = n_pp + n_cp
+F_stat = ((ss_res_pp - ss_res_full) / (p_full_model - p_cc_model)) / (
     ss_res_full / (n_obs - p_full_model)
 )
 p_value = 1 - f_dist.cdf(F_stat, p_full_model - p_cc_model, n_obs - p_full_model)
 
 # Cohen's f^2: effect size for the incremental R^2
-delta_r2 = r2_full - r2_cc
+delta_r2 = r2_full - r2_pp
 cohens_f2 = delta_r2 / (1 - r2_full)
 
 print(f"F-statistic: {F_stat:.2f}")
@@ -348,8 +368,8 @@ print(f"Cohen's f^2 {'< 0.02 (negligible)' if cohens_f2 < 0.02 else '>= 0.02 (no
 # %%
 fig, ax = plt.subplots(figsize=(6, 3.5))
 ax.hist(all_pp_dists, bins=50, edgecolor="k", alpha=0.7)
-ax.axvline(basis_cc.r_min, color="r", linestyle="--", label=f"basis range [{basis_cc.r_min}, {basis_cc.r_max}]")
-ax.axvline(basis_cc.r_max, color="r", linestyle="--")
+ax.axvline(basis_pp.r_min, color="r", linestyle="--", label=f"basis range [{basis_pp.r_min}, {basis_pp.r_max}]")
+ax.axvline(basis_pp.r_max, color="r", linestyle="--")
 ax.set_xlabel("Pole-pole distance (um)")
 ax.set_ylabel("Count")
 ax.set_title("Distribution of pole-pole distances across all cells/timepoints")
@@ -368,61 +388,66 @@ fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
 # Interpret the fitted kernel only over the observed support.  Outside the
 # data range the basis is clamped at the boundary, so plotting farther right
 # would create an artificial tail that is not constrained by measurements.
-r_cc_plot = np.linspace(all_pp_dists.min(), all_pp_dists.max(), 200)
+r_pp_plot = np.linspace(all_pp_dists.min(), all_pp_dists.max(), 200)
 
-# f_cc from cc-only model
-f_cc_only_vals = basis_cc.evaluate(r_cc_plot) @ theta_cc[:n_cc]
-axes[0].plot(r_cc_plot, f_cc_only_vals, linewidth=2, color="C0", label="cc-only model")
+# f_pp from pp-only model
+f_pp_only_vals = basis_pp.evaluate(r_pp_plot) @ theta_pp[:n_pp]
+axes[0].plot(r_pp_plot, f_pp_only_vals, linewidth=2, color="C0", label="pp-only model")
 
-# f_cc from full model (cc+xc)
-f_cc_full_vals = basis_cc.evaluate(r_cc_plot) @ theta_full[:n_cc]
-axes[0].plot(r_cc_plot, f_cc_full_vals, linewidth=2, color="C1", linestyle="--",
-             label="cc+xc model")
+# f_pp from full model (pp+cp)
+f_pp_full_vals = basis_pp.evaluate(r_pp_plot) @ theta_full[:n_pp]
+axes[0].plot(r_pp_plot, f_pp_full_vals, linewidth=2, color="C1", linestyle="--",
+             label="pp+cp model")
 
 axes[0].axhline(0, color="0.5", linestyle="--", linewidth=0.8)
 axes[0].set_xlabel("Pole-pole distance (um)")
 axes[0].set_ylabel("Effective drift coefficient (negative = separation)")
-axes[0].set_title("Effective pole-separation $f_{cc}(r)$ over observed support")
+axes[0].set_title(r"Effective pole-separation $f_{pp}(r)$ over observed support")
 axes[0].legend(fontsize=8)
 
-# f_xc from full model
-r_xc_plot = np.linspace(all_xp_dists.min(), all_xp_dists.max(), 200)
-f_xc_vals = basis_xc.evaluate(r_xc_plot) @ theta_full[n_cc:]
-axes[1].plot(r_xc_plot, f_xc_vals, linewidth=2, color="C1")
+# f_cp from full model and cp-only model (chromosome -> pole)
+r_cp_plot = np.linspace(all_cp_dists.min(), all_cp_dists.max(), 200)
+f_cp_full_vals = basis_cp.evaluate(r_cp_plot) @ theta_full[n_pp:]
+f_cp_only_vals = basis_cp.evaluate(r_cp_plot) @ theta_cp
+axes[1].plot(r_cp_plot, f_cp_full_vals, linewidth=2, color="C1", label="pp+cp model")
+axes[1].plot(r_cp_plot, f_cp_only_vals, linewidth=2, color="C2", linestyle="--",
+             label="cp-only model")
 axes[1].axhline(0, color="0.5", linestyle="--", linewidth=0.8)
 axes[1].set_xlabel("Chromosome-to-pole distance (um)")
 axes[1].set_ylabel("Effective drift coefficient")
-axes[1].set_title("Chromosome-on-centrosome $f_{xc}(r)$")
+axes[1].set_title(r"Chromosome $\rightarrow$ pole force $f_{cp}(r)$")
+axes[1].legend(fontsize=8)
 
-# Panel 3: prediction error comparison
-# The raw magnitudes of cc and xc contributions can be misleading because
-# xc is largely collinear with cc (chromosomes cluster along the spindle
-# axis).  What matters is whether xc *reduces prediction error*.
+# Panel 3: prediction error comparison across all three models
 V_obs = V_cent.reshape(-1, 3)  # (n_obs, 3)
-pred_cc_only = (G_cent[:, :n_cc] @ theta_cc[:n_cc]).reshape(-1, 3)
+pred_pp_only = (G_cent[:, :n_pp] @ theta_pp[:n_pp]).reshape(-1, 3)
+pred_cp_only = (G_cent[:, n_pp:] @ theta_cp).reshape(-1, 3)
 pred_full = (G_cent @ theta_full).reshape(-1, 3)
-err_cc = np.linalg.norm(V_obs - pred_cc_only, axis=1)
+err_pp = np.linalg.norm(V_obs - pred_pp_only, axis=1)
+err_cp = np.linalg.norm(V_obs - pred_cp_only, axis=1)
 err_full = np.linalg.norm(V_obs - pred_full, axis=1)
 
-axes[2].hist(err_cc, bins=50, alpha=0.7, color="C0",
-             label=f"cc only (RMSE={np.sqrt(np.mean(err_cc**2)):.4f})")
-axes[2].hist(err_full, bins=50, alpha=0.7, color="C1",
-             label=f"cc+xc (RMSE={np.sqrt(np.mean(err_full**2)):.4f})")
+axes[2].hist(err_pp, bins=50, alpha=0.6, color="C0",
+             label=f"pp only (RMSE={np.sqrt(np.mean(err_pp**2)):.4f})")
+axes[2].hist(err_cp, bins=50, alpha=0.6, color="C2",
+             label=f"cp only (RMSE={np.sqrt(np.mean(err_cp**2)):.4f})")
+axes[2].hist(err_full, bins=50, alpha=0.6, color="C1",
+             label=f"pp+cp (RMSE={np.sqrt(np.mean(err_full**2)):.4f})")
 axes[2].set_xlabel("Prediction error magnitude (um/s)")
 axes[2].set_ylabel("Count")
-axes[2].set_title("Adding xc barely reduces prediction error")
+axes[2].set_title("Prediction error: all three models")
 axes[2].legend(fontsize=8)
 
 fig.tight_layout()
 plt.show()
 
 # %%
-rmse_cc_obs = np.sqrt(np.mean(err_cc**2))
+rmse_pp_obs = np.sqrt(np.mean(err_pp**2))
 rmse_full_obs = np.sqrt(np.mean(err_full**2))
-print(f"Per-observation RMSE (cc only):  {rmse_cc_obs:.4f} um/s")
-print(f"Per-observation RMSE (cc + xc):  {rmse_full_obs:.4f} um/s")
-print(f"Error reduction:                 {rmse_cc_obs - rmse_full_obs:.5f} um/s "
-      f"({100 * (rmse_cc_obs - rmse_full_obs) / rmse_cc_obs:.2f}%)")
+print(f"Per-observation RMSE (pp only):  {rmse_pp_obs:.4f} um/s")
+print(f"Per-observation RMSE (pp + cp):  {rmse_full_obs:.4f} um/s")
+print(f"Error reduction:                 {rmse_pp_obs - rmse_full_obs:.5f} um/s "
+      f"({100 * (rmse_pp_obs - rmse_full_obs) / rmse_pp_obs:.2f}%)")
 
 # %% [markdown]
 # ### Part B.2 — Leave-one-cell-out cross-validation
@@ -432,13 +457,13 @@ print(f"Error reduction:                 {rmse_cc_obs - rmse_full_obs:.5f} um/s 
 # cross-validation: fit on N−1 cells, evaluate RMSE on the held-out cell.
 
 # %%
-def build_cell_matrices(cell, basis_cc, basis_xc):
+def build_cell_matrices(cell, basis_pp, basis_cp):
     """Build design matrix and velocity vector for a single cell."""
     G_rows = []
     V_rows = []
     T_cell = cell.centrioles.shape[0]
     dt = cell.dt
-    n_basis_xc_loc = basis_xc.n_basis
+    n_basis_cp_loc = basis_cp.n_basis
 
     for t in range(T_cell - 1):
         poles_cur = cell.centrioles[t].T
@@ -448,36 +473,37 @@ def build_cell_matrices(cell, basis_cc, basis_xc):
         for p in range(2):
             pole_vel = (poles_next[p] - poles_cur[p]) / dt
             other = 1 - p
-            delta_cc = poles_cur[other] - poles_cur[p]
-            r_cc_val = np.linalg.norm(delta_cc)
-            if r_cc_val < 1e-12:
+            delta_pp = poles_cur[other] - poles_cur[p]
+            r_pp_val = np.linalg.norm(delta_pp)
+            if r_pp_val < 1e-12:
                 continue
-            dir_cc = delta_cc / r_cc_val
-            phi_cc = basis_cc.evaluate(np.array([r_cc_val]))[0]
-            g_cc = dir_cc[:, np.newaxis] * phi_cc[np.newaxis, :]
+            dir_pp = delta_pp / r_pp_val
+            phi_pp = basis_pp.evaluate(np.array([r_pp_val]))[0]
+            g_pp = dir_pp[:, np.newaxis] * phi_pp[np.newaxis, :]
 
-            g_xc = np.zeros((3, n_basis_xc_loc))
+            g_cp = np.zeros((3, n_basis_cp_loc))
             valid_chroms = ~np.any(np.isnan(chroms), axis=1)
             if valid_chroms.any():
                 chroms_valid = chroms[valid_chroms]
-                delta_xc = chroms_valid - poles_cur[p]
-                dist_xc = np.linalg.norm(delta_xc, axis=1)
-                pair_ok = dist_xc > 1e-12
+                delta_cp = chroms_valid - poles_cur[p]
+                dist_cp = np.linalg.norm(delta_cp, axis=1)
+                pair_ok = dist_cp > 1e-12
                 if pair_ok.any():
-                    dir_xc = delta_xc[pair_ok] / dist_xc[pair_ok, np.newaxis]
-                    phi_xc = basis_xc.evaluate(dist_xc[pair_ok])
-                    g_xc = np.einsum("id,ib->db", dir_xc, phi_xc)
+                    dir_cp = delta_cp[pair_ok] / dist_cp[pair_ok, np.newaxis]
+                    phi_cp = basis_cp.evaluate(dist_cp[pair_ok])
+                    g_cp = np.einsum("id,ib->db", dir_cp, phi_cp)
 
-            row = np.hstack([g_cc, g_xc])
+            row = np.hstack([g_pp, g_cp])
             G_rows.append(row)
             V_rows.append(pole_vel)
 
     return np.vstack(G_rows), np.concatenate(V_rows)
 
 
-cell_matrices = [build_cell_matrices(c, basis_cc, basis_xc) for c in cells]
+cell_matrices = [build_cell_matrices(c, basis_pp, basis_cp) for c in cells]
 
-cv_rmse_cc = []
+cv_rmse_pp = []
+cv_rmse_cp = []
 cv_rmse_full = []
 
 for i in range(len(cells)):
@@ -490,28 +516,36 @@ for i in range(len(cells)):
     rmse_f = np.sqrt(np.mean((V_test - G_test @ theta_f) ** 2))
     cv_rmse_full.append(rmse_f)
 
-    # cc-only model
-    theta_c, _ = ridge_fit(G_train[:, :n_cc], V_train, R=R_cc)
-    rmse_c = np.sqrt(np.mean((V_test - G_test[:, :n_cc] @ theta_c) ** 2))
-    cv_rmse_cc.append(rmse_c)
+    # pp-only model
+    theta_c, _ = ridge_fit(G_train[:, :n_pp], V_train, R=R_pp)
+    rmse_c = np.sqrt(np.mean((V_test - G_test[:, :n_pp] @ theta_c) ** 2))
+    cv_rmse_pp.append(rmse_c)
 
-cv_rmse_cc = np.array(cv_rmse_cc)
+    # cp-only model (predict pole velocity from chromosome positions alone)
+    theta_cp_cv, _ = ridge_fit(G_train[:, n_pp:], V_train, R=R_cp)
+    rmse_cp = np.sqrt(np.mean((V_test - G_test[:, n_pp:] @ theta_cp_cv) ** 2))
+    cv_rmse_cp.append(rmse_cp)
+
+cv_rmse_pp = np.array(cv_rmse_pp)
+cv_rmse_cp = np.array(cv_rmse_cp)
 cv_rmse_full = np.array(cv_rmse_full)
 
 print("Leave-one-cell-out cross-validation RMSE (um/s):")
-print(f"  cc-only:  {cv_rmse_cc.mean():.4f} ± {cv_rmse_cc.std():.4f}")
-print(f"  cc + xc:  {cv_rmse_full.mean():.4f} ± {cv_rmse_full.std():.4f}")
-print(f"  Delta RMSE: {(cv_rmse_cc - cv_rmse_full).mean():.4f}")
+print(f"  pp-only:  {cv_rmse_pp.mean():.4f} +/- {cv_rmse_pp.std():.4f}")
+print(f"  cp-only:  {cv_rmse_cp.mean():.4f} +/- {cv_rmse_cp.std():.4f}")
+print(f"  pp + cp:  {cv_rmse_full.mean():.4f} +/- {cv_rmse_full.std():.4f}")
+print(f"  Delta RMSE (pp vs full): {(cv_rmse_pp - cv_rmse_full).mean():.4f}")
 
-fig, ax = plt.subplots(figsize=(5, 4))
+fig, ax = plt.subplots(figsize=(7, 4))
 x_pos = np.arange(len(cells))
-width = 0.35
-ax.bar(x_pos - width / 2, cv_rmse_cc, width, label="cc only", color="C0", alpha=0.8)
-ax.bar(x_pos + width / 2, cv_rmse_full, width, label="cc + xc", color="C1", alpha=0.8)
+width = 0.25
+ax.bar(x_pos - width, cv_rmse_pp, width, label="pp only", color="C0", alpha=0.8)
+ax.bar(x_pos, cv_rmse_cp, width, label="cp only", color="C2", alpha=0.8)
+ax.bar(x_pos + width, cv_rmse_full, width, label="pp + cp", color="C1", alpha=0.8)
 ax.set_xticks(x_pos)
 ax.set_xticklabels([c.cell_id for c in cells], rotation=45, ha="right", fontsize=8)
 ax.set_ylabel("RMSE (um/s)")
-ax.set_title("CV RMSE: cc-only vs cc+xc")
+ax.set_title("LOOCV RMSE: which forces predict pole velocity?")
 ax.legend()
 fig.tight_layout()
 plt.show()
@@ -519,9 +553,9 @@ plt.show()
 # %% [markdown]
 # ### Permutation test
 #
-# We shuffle time indices of the xc features within each cell (breaking
+# We shuffle time indices of the cp features within each cell (breaking
 # the temporal coupling between chromosome positions and centrosome
-# velocity while preserving each cell's marginal distribution of xc
+# velocity while preserving each cell's marginal distribution of cp
 # features) and refit the full model.  This tests whether the observed
 # ΔR² requires temporally-aligned chromosome positions or could arise
 # from the marginal statistics alone.
@@ -532,7 +566,7 @@ perm_rng = np.random.default_rng(123)
 perm_delta_r2 = np.empty(N_PERM)
 
 for perm in range(N_PERM):
-    # For each cell, shuffle the time ordering of its xc feature rows,
+    # For each cell, shuffle the time ordering of its cp feature rows,
     # then reassemble the global design matrix.
     G_perm_parts = []
     V_perm_parts = []
@@ -542,9 +576,9 @@ for perm in range(N_PERM):
         # Permute observation indices within this cell
         shuffle_idx = perm_rng.permutation(n_obs_cell)
         G_cell_perm = G_cell.copy()
-        xc_block = G_cell[:, n_cc:].copy()
+        cp_block = G_cell[:, n_pp:].copy()
         for i, si in enumerate(shuffle_idx):
-            G_cell_perm[i * 3:(i + 1) * 3, n_cc:] = xc_block[si * 3:(si + 1) * 3]
+            G_cell_perm[i * 3:(i + 1) * 3, n_pp:] = cp_block[si * 3:(si + 1) * 3]
         G_perm_parts.append(G_cell_perm)
         V_perm_parts.append(V_cell)
 
@@ -553,7 +587,7 @@ for perm in range(N_PERM):
     theta_perm, res_perm = ridge_fit(G_perm, V_perm, R=R_full)
     ss_res_perm = np.sum(res_perm**2)
     r2_perm = 1 - ss_res_perm / ss_tot
-    perm_delta_r2[perm] = r2_perm - r2_cc
+    perm_delta_r2[perm] = r2_perm - r2_pp
 
 # Correct finite-permutation p-value: (count + 1) / (N_PERM + 1)
 n_exceed = int(np.sum(perm_delta_r2 >= delta_r2))
@@ -563,19 +597,19 @@ print(f"Observed Delta R^2:     {delta_r2:.4f}")
 print(f"Permutation null mean:  {perm_delta_r2.mean():.4f}")
 print(f"Permutation null 95th:  {np.percentile(perm_delta_r2, 95):.4f}")
 print(f"Permutation p-value:    {perm_p_value:.4f}")
-print(f"  ({N_PERM} permutations, shuffling xc time indices within cells)")
+print(f"  ({N_PERM} permutations, shuffling cp time indices within cells)")
 print()
 print("Interpretation: the permutation test detects a real but tiny temporally-")
-print(f"aligned xc signal (Delta R^2 = {delta_r2:.4f}).  However, the effect size")
+print(f"aligned cp signal (Delta R^2 = {delta_r2:.4f}).  However, the effect size")
 print(f"is negligible (Cohen's f^2 = {cohens_f2:.4f} < 0.02) and the LOO-CV below")
 print("shows this signal does not translate into meaningful out-of-sample prediction.")
 
 # %% [markdown]
 # ### Part B.3 — Forward simulation of spindle length
 #
-# The ultimate test: can the cc-only model, when used to simulate pole
+# The ultimate test: can the pp-only model, when used to simulate pole
 # dynamics forward in time from real initial conditions, reproduce the
-# observed spindle-length trajectory?  We compare cc-only and cc+xc
+# observed spindle-length trajectory?  We compare pp-only and pp+cp
 # models against the real data.  Spindle lengths are pooled across cells
 # on a normalized time axis [0, 1] (NEB to trim endpoint).
 #
@@ -585,9 +619,9 @@ print("shows this signal does not translate into meaningful out-of-sample predic
 # realization per bootstrap kernel is sufficient.
 
 # %%
-# Estimate centrosome diffusion coefficient from cc-only residuals.
+# Estimate centrosome diffusion coefficient from pp-only residuals.
 # D = 0.5 * mean(residual^2) * dt  (per-component variance = 2D/dt)
-D_cent = 0.5 * float(np.mean(res_cc**2)) * cells[0].dt
+D_cent = 0.5 * float(np.mean(res_pp**2)) * cells[0].dt
 
 N_BOOT = 50
 N_TNORM = 101  # normalized time grid points
@@ -599,52 +633,70 @@ from scipy.interpolate import BSpline as _BSpline
 def _make_force_callable(basis, theta_slice):
     """Build a fast callable f(r) -> scalar force from basis + coefficients.
 
-    Returns a BSpline object that evaluates the kernel directly, avoiding
-    the overhead of design_matrix().toarray() on every timestep.
+    Returns a closure that clamps r to the basis domain before evaluating,
+    matching the boundary-clamping behavior of basis.evaluate().
     """
-    return _BSpline(basis.knots, theta_slice, basis.degree, extrapolate=False)
+    spline = _BSpline(basis.knots, theta_slice, basis.degree, extrapolate=False)
+    r_lo, r_hi = basis.r_min, basis.r_max
+
+    def _f(r):
+        r_clamped = np.clip(r, r_lo, r_hi)
+        val = spline(r_clamped)
+        return np.nan_to_num(val, nan=0.0)
+
+    return _f
 
 
-def simulate_poles_fast(poles_init, f_cc_func, dt, D, n_steps,
-                        f_xc_func=None, chromosomes=None, rng=None):
-    """Euler-Maruyama forward simulation of two poles using fast callables."""
-    if rng is None:
+def simulate_poles_fast(poles_init, f_pp_func, dt, D, n_steps,
+                        f_cp_func=None, chromosomes=None, rng=None,
+                        deterministic=False):
+    """Forward simulation of two poles using fast callables.
+
+    When *deterministic* is True, integrates the noise-free drift ODE
+    (forward Euler, D is ignored).  Otherwise uses Euler-Maruyama.
+    f_pp_func may be None (cp-only model); f_cp_func requires chromosomes.
+    """
+    if not deterministic and rng is None:
         rng = np.random.default_rng()
-    use_xc = f_xc_func is not None and chromosomes is not None
+    use_pp = f_pp_func is not None
+    use_cp = f_cp_func is not None and chromosomes is not None
     poles = poles_init.copy()
     spindle_len = np.empty(n_steps + 1)
     spindle_len[0] = np.linalg.norm(poles[1] - poles[0])
-    noise_scale = np.sqrt(2 * D * dt)
+    noise_scale = 0.0 if deterministic else np.sqrt(2 * D * dt)
 
     for t in range(n_steps):
         new_poles = np.empty_like(poles)
         for p in range(2):
-            other = 1 - p
-            delta = poles[other] - poles[p]
-            r_pp = np.linalg.norm(delta)
-            if r_pp < 1e-12:
-                new_poles[p] = poles[p] + noise_scale * rng.standard_normal(3)
-                continue
-            direction = delta / r_pp
-            f_val = f_cc_func(r_pp)
-            if np.isnan(f_val):
-                f_val = 0.0
-            force = direction * f_val
+            force = np.zeros(3)
 
-            if use_xc and t < chromosomes.shape[0]:
+            if use_pp:
+                other = 1 - p
+                delta = poles[other] - poles[p]
+                r_pp = np.linalg.norm(delta)
+                if r_pp > 1e-12:
+                    f_val = f_pp_func(r_pp)
+                    if np.isnan(f_val):
+                        f_val = 0.0
+                    force += (delta / r_pp) * f_val
+
+            if use_cp and t < chromosomes.shape[0]:
                 chroms_t = chromosomes[t].T  # (N, 3)
                 valid = ~np.any(np.isnan(chroms_t), axis=1)
                 if valid.any():
-                    delta_xc = chroms_t[valid] - poles[p]
-                    dist_xc = np.linalg.norm(delta_xc, axis=1)
-                    ok = dist_xc > 1e-12
+                    delta_cp = chroms_t[valid] - poles[p]
+                    dist_cp = np.linalg.norm(delta_cp, axis=1)
+                    ok = dist_cp > 1e-12
                     if ok.any():
-                        f_xc_vals = f_xc_func(dist_xc[ok])
-                        f_xc_vals = np.nan_to_num(f_xc_vals, nan=0.0)
-                        dir_xc = delta_xc[ok] / dist_xc[ok, np.newaxis]
-                        force += (dir_xc * f_xc_vals[:, np.newaxis]).sum(axis=0)
+                        f_cp_vals = f_cp_func(dist_cp[ok])
+                        f_cp_vals = np.nan_to_num(f_cp_vals, nan=0.0)
+                        dir_cp = delta_cp[ok] / dist_cp[ok, np.newaxis]
+                        force += (dir_cp * f_cp_vals[:, np.newaxis]).sum(axis=0)
 
-            new_poles[p] = poles[p] + force * dt + noise_scale * rng.standard_normal(3)
+            if deterministic:
+                new_poles[p] = poles[p] + force * dt
+            else:
+                new_poles[p] = poles[p] + force * dt + noise_scale * rng.standard_normal(3)
         poles = new_poles
         spindle_len[t + 1] = np.linalg.norm(poles[1] - poles[0])
 
@@ -664,38 +716,63 @@ for ci, cell in enumerate(cells):
 
 # Bootstrap: resample cells, refit kernel, simulate, interpolate, pool
 n_cells = len(cells)
-sim_cc_interp = np.empty((N_BOOT, n_cells, N_TNORM))
+sim_pp_interp = np.empty((N_BOOT, n_cells, N_TNORM))
+sim_cp_interp = np.empty((N_BOOT, n_cells, N_TNORM))
 sim_full_interp = np.empty((N_BOOT, n_cells, N_TNORM))
 
 import time as _time
 _t0 = _time.perf_counter()
+
+# Also collect kernel curves for bootstrap CI on kernel shapes
+boot_fpp_only = np.empty((N_BOOT, len(r_pp_plot)))
+boot_fpp_full = np.empty((N_BOOT, len(r_pp_plot)))
+boot_fcp_only = np.empty((N_BOOT, len(r_cp_plot)))
+boot_fcp_full = np.empty((N_BOOT, len(r_cp_plot)))
 
 for b in range(N_BOOT):
     boot_idx = rng.choice(n_cells, size=n_cells, replace=True)
     G_boot = np.vstack([cell_matrices[j][0] for j in boot_idx])
     V_boot = np.concatenate([cell_matrices[j][1] for j in boot_idx])
 
-    theta_boot_cc, _ = ridge_fit(G_boot[:, :n_cc], V_boot, R=R_cc)
+    theta_boot_pp, _ = ridge_fit(G_boot[:, :n_pp], V_boot, R=R_pp)
+    theta_boot_cp, _ = ridge_fit(G_boot[:, n_pp:], V_boot, R=R_cp)
     theta_boot_full, _ = ridge_fit(G_boot, V_boot, R=R_full)
 
+    # Store kernel curves for CI bands
+    boot_fpp_only[b] = basis_pp.evaluate(r_pp_plot) @ theta_boot_pp
+    boot_fpp_full[b] = basis_pp.evaluate(r_pp_plot) @ theta_boot_full[:n_pp]
+    boot_fcp_only[b] = basis_cp.evaluate(r_cp_plot) @ theta_boot_cp
+    boot_fcp_full[b] = basis_cp.evaluate(r_cp_plot) @ theta_boot_full[n_pp:]
+
     # Build fast callables for this bootstrap replicate
-    f_cc_only = _make_force_callable(basis_cc, theta_boot_cc)
-    f_cc_full = _make_force_callable(basis_cc, theta_boot_full[:n_cc])
-    f_xc_full = _make_force_callable(basis_xc, theta_boot_full[n_cc:])
+    f_pp_only = _make_force_callable(basis_pp, theta_boot_pp)
+    f_cp_only_boot = _make_force_callable(basis_cp, theta_boot_cp)
+    f_pp_full = _make_force_callable(basis_pp, theta_boot_full[:n_pp])
+    f_cp_full = _make_force_callable(basis_cp, theta_boot_full[n_pp:])
 
     for ci, cell in enumerate(cells):
         T_cell = cell.centrioles.shape[0]
         poles_init = cell.centrioles[0].T
         t_cell_norm = np.linspace(0, 1, T_cell)
 
-        sl_cc = simulate_poles_fast(
-            poles_init, f_cc_only, cell.dt, D_cent, T_cell - 1, rng=rng,
+        sl_pp = simulate_poles_fast(
+            poles_init, f_pp_only, cell.dt, D_cent, T_cell - 1,
+            deterministic=True,
         )
-        sim_cc_interp[b, ci] = np.interp(t_norm, t_cell_norm, sl_cc)
+        sim_pp_interp[b, ci] = np.interp(t_norm, t_cell_norm, sl_pp)
+
+        # cp-only: drive poles using real chromosome positions (teacher-forced)
+        sl_cp = simulate_poles_fast(
+            poles_init, None, cell.dt, D_cent, T_cell - 1,
+            f_cp_func=f_cp_only_boot, chromosomes=cell.chromosomes,
+            deterministic=True,
+        )
+        sim_cp_interp[b, ci] = np.interp(t_norm, t_cell_norm, sl_cp)
 
         sl_full = simulate_poles_fast(
-            poles_init, f_cc_full, cell.dt, D_cent, T_cell - 1,
-            f_xc_func=f_xc_full, chromosomes=cell.chromosomes, rng=rng,
+            poles_init, f_pp_full, cell.dt, D_cent, T_cell - 1,
+            f_cp_func=f_cp_full, chromosomes=cell.chromosomes,
+            deterministic=True,
         )
         sim_full_interp[b, ci] = np.interp(t_norm, t_cell_norm, sl_full)
 
@@ -705,7 +782,8 @@ print(f"Forward simulation complete: {N_BOOT} bootstrap resamples in {_elapsed:.
 # %%
 # Pool across cells: for each bootstrap, compute cell-mean at each norm time
 # Shape: (N_BOOT, N_TNORM)
-sim_cc_pooled = sim_cc_interp.mean(axis=1)
+sim_pp_pooled = sim_pp_interp.mean(axis=1)
+sim_cp_pooled = sim_cp_interp.mean(axis=1)
 sim_full_pooled = sim_full_interp.mean(axis=1)
 
 fig, ax = plt.subplots(figsize=(7, 5))
@@ -721,19 +799,26 @@ ax.plot(t_norm, real_mean, "k-", linewidth=2.5, label="Data")
 ax.fill_between(t_norm, real_mean - real_std, real_mean + real_std,
                 color="k", alpha=0.12, label="Data $\\pm$ 1 SD")
 
-# cc-only: median + 90% CI across bootstrap
-med_cc = np.median(sim_cc_pooled, axis=0)
-lo_cc = np.percentile(sim_cc_pooled, 5, axis=0)
-hi_cc = np.percentile(sim_cc_pooled, 95, axis=0)
-ax.plot(t_norm, med_cc, "C0-", linewidth=2, label="cc only (bootstrap median)")
-ax.fill_between(t_norm, lo_cc, hi_cc, color="C0", alpha=0.2, label="cc only 90% CI")
+# pp-only: median + 90% CI across bootstrap
+med_pp = np.median(sim_pp_pooled, axis=0)
+lo_pp = np.percentile(sim_pp_pooled, 5, axis=0)
+hi_pp = np.percentile(sim_pp_pooled, 95, axis=0)
+ax.plot(t_norm, med_pp, "C0-", linewidth=2, label="pp only (bootstrap median)")
+ax.fill_between(t_norm, lo_pp, hi_pp, color="C0", alpha=0.2, label="pp only 90% CI")
 
-# cc+xc: median + 90% CI across bootstrap
+# cp-only (teacher-forced): median + 90% CI across bootstrap
+med_cp = np.median(sim_cp_pooled, axis=0)
+lo_cp = np.percentile(sim_cp_pooled, 5, axis=0)
+hi_cp = np.percentile(sim_cp_pooled, 95, axis=0)
+ax.plot(t_norm, med_cp, "C2:", linewidth=2, label="cp only (bootstrap median)")
+ax.fill_between(t_norm, lo_cp, hi_cp, color="C2", alpha=0.15, label="cp only 90% CI")
+
+# pp+cp: median + 90% CI across bootstrap
 med_full = np.median(sim_full_pooled, axis=0)
 lo_full = np.percentile(sim_full_pooled, 5, axis=0)
 hi_full = np.percentile(sim_full_pooled, 95, axis=0)
-ax.plot(t_norm, med_full, "C1--", linewidth=2, label="cc+xc (bootstrap median)")
-ax.fill_between(t_norm, lo_full, hi_full, color="C1", alpha=0.15, label="cc+xc 90% CI")
+ax.plot(t_norm, med_full, "C1--", linewidth=2, label="pp+cp (bootstrap median)")
+ax.fill_between(t_norm, lo_full, hi_full, color="C1", alpha=0.15, label="pp+cp 90% CI")
 
 ax.set_xlabel("Normalized time (NEB to trim endpoint)")
 ax.set_ylabel("Spindle length (um)")
@@ -743,9 +828,55 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# The cc-only model reproduces the pooled spindle-length trajectory,
+# ### Bootstrap CI on kernel shapes
+#
+# The kernel shapes from bootstrap resampling (cell-level) give uncertainty
+# bands for $f_{pp}(r)$ and $f_{cp}(r)$.
+
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+
+# f_pp kernel CI
+for arr, color, label in [
+    (boot_fpp_only, "C0", "pp-only"),
+    (boot_fpp_full, "C1", "pp (from pp+cp)"),
+]:
+    med = np.median(arr, axis=0)
+    lo = np.percentile(arr, 5, axis=0)
+    hi = np.percentile(arr, 95, axis=0)
+    axes[0].plot(r_pp_plot, med, color=color, linewidth=2, label=label)
+    axes[0].fill_between(r_pp_plot, lo, hi, color=color, alpha=0.2)
+
+axes[0].axhline(0, color="0.5", linestyle="--", linewidth=0.8)
+axes[0].set_xlabel("Pole-pole distance (um)")
+axes[0].set_ylabel("Effective drift coefficient")
+axes[0].set_title(r"$f_{pp}(r)$ with bootstrap 90% CI")
+axes[0].legend(fontsize=8)
+
+# f_cp kernel CI
+for arr, color, label in [
+    (boot_fcp_only, "C2", "cp-only"),
+    (boot_fcp_full, "C1", "cp (from pp+cp)"),
+]:
+    med = np.median(arr, axis=0)
+    lo = np.percentile(arr, 5, axis=0)
+    hi = np.percentile(arr, 95, axis=0)
+    axes[1].plot(r_cp_plot, med, color=color, linewidth=2, label=label)
+    axes[1].fill_between(r_cp_plot, lo, hi, color=color, alpha=0.2)
+
+axes[1].axhline(0, color="0.5", linestyle="--", linewidth=0.8)
+axes[1].set_xlabel("Chromosome-to-pole distance (um)")
+axes[1].set_ylabel("Effective drift coefficient")
+axes[1].set_title(r"$f_{cp}(r)$ with bootstrap 90% CI")
+axes[1].legend(fontsize=8)
+
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# The pp-only model reproduces the pooled spindle-length trajectory,
 # confirming that the learned kernel captures genuine separation dynamics.
-# The cc+xc model offers only marginal improvement — any difference is
+# The pp+cp model offers only marginal improvement -- any difference is
 # small relative to cell-to-cell variability, consistent with the
 # negligible effect size and cross-validation results above.
 #
@@ -778,7 +909,7 @@ plt.show()
 # 2. **Statistical redundancy (Part B):** Adding chromosome forces does not
 #    meaningfully improve prediction of centrosome velocities beyond a
 #    simple distance-dependent separation term.  A permutation test detects
-#    a statistically real but tiny temporally-aligned xc signal, but the
+#    a statistically real but tiny temporally-aligned cp signal, but the
 #    effect size is negligible (Cohen's $f^2 < 0.02$), out-of-sample
 #    cross-validation shows no RMSE improvement, and forward-simulated
 #    spindle-length trajectories are indistinguishable.
@@ -798,7 +929,7 @@ plt.show()
 # same noise floor.
 #
 # **1D spindle-length regression.**  A cleaner test would regress only
-# the 1D rate of change of pole-pole distance, dr/dt, against f_cc(r)
+# the 1D rate of change of pole-pole distance, dr/dt, against f_pp(r)
 # projected onto the spindle axis.  This eliminates all common-mode
 # drift and transverse motion, and should give dramatically higher
 # absolute R^2.  The chromosome contribution would be projected onto

@@ -51,8 +51,8 @@ N_BASIS_XY = 10                  # Number of spline basis functions for pole-chr
 R_MIN = 0.3                      # Lower basis cutoff in microns.
 R_MAX = 15.0                     # Upper basis cutoff in microns.
 BASIS_TYPE = "bspline"           # Functional basis used for the learned kernels.
-LAMBDA_RIDGE = 1e-3              # L2 penalty on coefficient magnitude.
-LAMBDA_ROUGH = 1.0               # Smoothness penalty on neighboring spline coefficients.
+LAMBDA_RIDGE = 1e-6              # Fixed numerical jitter; not a tuning knob.
+LAMBDA_ROUGH = 1.0               # Integrated 2nd-derivative penalty (controls kernel smoothness).
 BASIS_EVAL_MODE = "ito"          # Drift-evaluation convention used in the fit.
 DT = 5.0                         # Frame interval in seconds.
 

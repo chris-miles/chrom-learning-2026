@@ -315,6 +315,7 @@ def estimate_diffusion_variable(
     lambda_ridge: float = 1e-3,
     topology: str = "poles",
     r_cutoff_xx: float | None = None,
+    nonneg: bool = True,
 ) -> DiffusionResult:
     """Fit a spatially-varying diffusion coefficient D(coordinate).
 
@@ -342,11 +343,11 @@ def estimate_diffusion_variable(
         :class:`DiffusionResult` with fitted coefficients and scalar summary.
 
     Note:
-        The solve is unconstrained ridge regression, so the fitted D(x) curve
-        can go slightly negative at domain margins where data is sparse.  This
-        is acceptable as a smooth surrogate for visualization but should not be
-        interpreted as a literal diffusion coefficient without a positivity
-        constraint.
+        The solve uses non-negative least squares (NNLS) on the
+        ridge-augmented system.  Since B-spline basis functions are
+        non-negative, constraining coefficients d >= 0 guarantees
+        D(x) >= 0 everywhere.  Set ``nonneg=False`` for the old
+        unconstrained behavior.
 
     Raises:
         ValueError: If *coord_name* is not a recognised coordinate map.
@@ -422,9 +423,19 @@ def estimate_diffusion_variable(
         )
 
     Phi = basis_D.evaluate(coords_cat)  # (K, n_basis)
-    A = Phi.T @ Phi + lambda_ridge * np.eye(n_basis)
-    b = Phi.T @ D_cat
-    d_coeffs = np.linalg.solve(A, b)
+
+    if nonneg:
+        # NNLS on augmented system: [Phi; sqrt(lambda)*I] d = [D_local; 0]
+        # Guarantees D(x) >= 0 since B-spline basis functions are non-negative.
+        from scipy.optimize import nnls
+        reg_block = np.sqrt(lambda_ridge) * np.eye(n_basis)
+        A_aug = np.vstack([Phi, reg_block])
+        b_aug = np.concatenate([D_cat, np.zeros(n_basis)])
+        d_coeffs, _ = nnls(A_aug, b_aug)
+    else:
+        A = Phi.T @ Phi + lambda_ridge * np.eye(n_basis)
+        b = Phi.T @ D_cat
+        d_coeffs = np.linalg.solve(A, b)
 
     return DiffusionResult(
         d_coeffs=d_coeffs,

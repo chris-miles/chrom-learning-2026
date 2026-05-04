@@ -11,12 +11,11 @@
 # | **center\_and\_chroms** | pole midpoint | yes (full range) |
 # | **poles\_and\_chroms\_short** | both poles | yes (r < 2.5 um only) |
 #
-# Primary selection criterion: leave-one-cell-out ensemble-mean MSE
-# (simulated positions averaged across replicates before comparing to
-# reality, cancelling stochastic noise to isolate systematic drift bias).
-# Secondary quantitative checks: per-rep path MSE, one-step velocity MSE,
-# endpoint mismatch, final-frame distribution mismatch, and
-# horizon-specific rollout errors.
+# Primary selection criterion: leave-one-cell-out deterministic drift-rollout
+# MSE (single noise-free ODE forward integration of the fitted drift,
+# scoring the conditional-mean trajectory to isolate systematic drift bias).
+# Secondary quantitative checks: one-step velocity MSE, endpoint mismatch,
+# final-frame distribution mismatch, and horizon-specific rollout errors.
 # Secondary qualitative checks: bootstrap CIs, kernel physics checks, and
 # representative forward simulations.
 
@@ -65,8 +64,8 @@ plt.rcParams["figure.dpi"] = 110
 CONDITION = "rpe18_ctr"          # Control-condition cells used for topology selection.
 FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
 N_BASIS = 10                     # Number of spline basis functions per interaction kernel.
-LAMBDA_RIDGE = 1e-3              # L2 penalty on coefficient magnitude.
-LAMBDA_ROUGH = 1.0               # Smoothness penalty on neighboring spline coefficients.
+LAMBDA_RIDGE = 1e-6              # Fixed numerical jitter; not a tuning knob.
+LAMBDA_ROUGH = 1.0               # Integrated 2nd-derivative penalty (controls kernel smoothness).
 BASIS_TYPE = "bspline"           # Functional basis used for the learned kernels.
 BASIS_EVAL_MODE = "ito"          # SFI convention for evaluating the drift basis.
 DT = 5.0                         # Frame interval in seconds.
@@ -191,7 +190,7 @@ plt.show()
 #
 # We use:
 # - `n_basis = 10` B-spline basis functions for both xx and xy kernels
-# - `lambda_ridge = 1e-3`, `lambda_rough = 1.0`
+# - `lambda_ridge = 1e-6` (numerical jitter), `lambda_rough = 1.0`
 # - `basis_eval_mode = "ito"` (current positions, standard SFI)
 # - `endpoint_frac = 0.4` of the NEB-to-AO window
 #
@@ -496,12 +495,15 @@ sf_real = spindle_frame(example_cell)
 
 QUAL_CELL_IDXS = sorted({0, len(cells) // 2, len(cells) - 1})
 QUAL_N_TRACES = 6
-ROLLOUT_REPS = 32
-ROLLOUT_HORIZONS = (1, 3, 5, 8, 10, 15, 20)
+ROLLOUT_HORIZONS = (1, 3, 5, 8, 10, 15, 20, 25, 30)
+H_PRIMARY = 10  # Primary held-out horizon (frames). Sweep via the curve below.
+assert H_PRIMARY in ROLLOUT_HORIZONS, "H_PRIMARY must be one of ROLLOUT_HORIZONS"
 
 
-def _simulate_cell_once(cell: TrimmedCell, model: FittedModel, seed: int):
-    traj, sim_cell = simulate_cell(cell, model, rng=np.random.default_rng(seed))
+def _simulate_cell_once(cell: TrimmedCell, model: FittedModel, seed: int = 0,
+                         deterministic: bool = True):
+    rng = None if deterministic else np.random.default_rng(seed)
+    traj, sim_cell = simulate_cell(cell, model, rng=rng, deterministic=deterministic)
     return traj, spindle_frame(sim_cell)
 
 
@@ -545,8 +547,7 @@ for cell_idx in QUAL_CELL_IDXS:
     print(f"  {cell.cell_id}: {cell.chromosomes.shape[0]} frames, {cell.chromosomes.shape[2]} chromosomes")
 
     for col, topology in enumerate(TOPOLOGIES):
-        sim_seed = 1000 + 100 * cell_idx + col
-        _traj, sf_sim = _simulate_cell_once(cell, models[topology], seed=sim_seed)
+        _traj, sf_sim = _simulate_cell_once(cell, models[topology])
 
         ax_axial = axes[0, col]
         ax_radial = axes[1, col]
@@ -666,9 +667,8 @@ for cell_idx in QUAL_CELL_IDXS[:2]:
 
     # Panels 1+: rollouts from selected topologies
     for ti, topology in enumerate(PCA_TOPOLOGIES):
-        sim_seed = 2000 + 100 * cell_idx + ti
         _traj, sim_cell_3d = simulate_cell(cell, models[topology],
-                                           rng=np.random.default_rng(sim_seed))
+                                           deterministic=True)
         _plot_pca_panel(axes[0, ti + 1], sim_cell_3d, f"Rollout — {topology}")
 
     fig.suptitle(f"Trajectories in PCA space — {cell.cell_id}\n"
@@ -694,11 +694,7 @@ for cell_idx, cell in enumerate(cells):
     agg_real_radial.append(_interp_to_unit_grid(np.nanmean(sf_cell_real.radial, axis=1), n_grid=AGG_NORM_GRID))
 
     for topo_index, topology in enumerate(TOPOLOGIES):
-        _traj, sf_sim = _simulate_cell_once(
-            cell,
-            models[topology],
-            seed=10_000 + 100 * cell_idx + topo_index,
-        )
+        _traj, sf_sim = _simulate_cell_once(cell, models[topology])
         agg_sim_axial[topology].append(
             _interp_to_unit_grid(np.nanmean(sf_sim.axial, axis=1), n_grid=AGG_NORM_GRID)
         )
@@ -780,248 +776,175 @@ plt.show()
 
 
 # %%
-print("Running leave-one-cell-out rollout validation "
-      f"({len(TOPOLOGIES)} topologies × {len(cells)} folds × {ROLLOUT_REPS} rollout replicates)...")
-print("  (common random numbers across topologies for paired comparison)")
+print("Running leave-one-cell-out deterministic rollout validation "
+      f"({len(TOPOLOGIES)} topologies × {len(cells)} folds)...")
 rollout_results: dict[str, RolloutCVResult] = {}
-ROLLOUT_SEED = 200
 for topo_index, topology in enumerate(TOPOLOGIES):
     rollout_results[topology] = rollout_cross_validate(
         cells,
         configs[topology],
-        n_reps=ROLLOUT_REPS,
         horizons=ROLLOUT_HORIZONS,
-        rng=np.random.default_rng(ROLLOUT_SEED),
+        deterministic=True,
     )
     rr = rollout_results[topology]
-    print(f"  {topology:<22}  ens_MSE={np.nanmean(rr.ensemble_mse):.5f}  "
+    h_idx = list(rr.horizons).index(H_PRIMARY)
+    primary_mse = float(np.nanmean(rr.horizon_ensemble_mse[:, h_idx]))
+    print(f"  {topology:<22}  primary_MSE(h={H_PRIMARY})={primary_mse:.5f}  "
           f"path_MSE={np.nanmean(rr.path_mse):.5f}  "
-          f"axial_MSE={np.nanmean(rr.axial_mse):.5f}  "
-          f"radial_MSE={np.nanmean(rr.radial_mse):.5f}  "
           f"endpoint_MSE={np.nanmean(rr.endpoint_mean_error):.5f}  "
           f"final_W1(ax,rad)=({np.nanmean(rr.final_axial_wasserstein):.4f}, "
           f"{np.nanmean(rr.final_radial_wasserstein):.4f})")
 
 
 # %%
+# Primary model-selection criterion: leave-one-cell-out deterministic
+# drift-rollout MSE at horizon H_PRIMARY (default 10 frames). The full horizon
+# curve below shows whether the topology ranking is stable across horizons.
+_primary_h_idx = list(rollout_results[TOPOLOGIES[0]].horizons).index(H_PRIMARY)
 rollout_ensemble_mse_score = {
-    topology: float(np.nanmean(rollout_results[topology].ensemble_mse))
+    topology: float(np.nanmean(
+        rollout_results[topology].horizon_ensemble_mse[:, _primary_h_idx]
+    ))
     for topology in TOPOLOGIES
 }
-rollout_mse_score = {
-    topology: float(np.nanmean(rollout_results[topology].path_mse))
-    for topology in TOPOLOGIES
-}
-rollout_endpoint_score = {
-    topology: float(np.nanmean(rollout_results[topology].endpoint_mean_error))
-    for topology in TOPOLOGIES
-}
-rollout_dist_score = {
-    topology: float(np.nanmean(rollout_results[topology].final_axial_wasserstein)
-                    + np.nanmean(rollout_results[topology].final_radial_wasserstein))
-    for topology in TOPOLOGIES
-}
+sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
 
-fig, axes = plt.subplots(1, 5, figsize=(24, 4.5))
+# Simplified rollout display: ensemble MSE bar chart + from-NEB horizon curve
+fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
 x = np.arange(len(TOPOLOGIES))
 
-axes[0].bar(x, [rollout_ensemble_mse_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
+axes[0].bar(x, [rollout_ensemble_mse_score[t] for t in TOPOLOGIES],
+            color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[0].set_xticks(x)
 axes[0].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[0].set_ylabel("Ensemble MSE (um^2)")
-axes[0].set_title("LOOCV ensemble MSE\n(avg positions, then compare)")
+axes[0].set_ylabel(f"Ensemble MSE at h={H_PRIMARY} (um^2)")
+axes[0].set_title(f"LOOCV drift-rollout MSE at h={H_PRIMARY}\n(primary criterion)")
 
-axes[1].bar(x, [rollout_mse_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
-axes[1].set_xticks(x)
-axes[1].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[1].set_ylabel("Path MSE (um^2)")
-axes[1].set_title("LOOCV rollout path MSE\n(per-chromosome 3D MSE)")
-
-axes[2].bar(x, [rollout_endpoint_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
-axes[2].set_xticks(x)
-axes[2].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[2].set_ylabel("Endpoint mean error (um^2)")
-axes[2].set_title("LOOCV endpoint-only score\n(final axial/radial mean mismatch)")
-
-axes[3].bar(x, [rollout_dist_score[t] for t in TOPOLOGIES], color=[f"C{i}" for i in range(len(TOPOLOGIES))])
-axes[3].set_xticks(x)
-axes[3].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[3].set_ylabel("Final-frame W1 distance (um)")
-axes[3].set_title("LOOCV final distribution mismatch\n(axial W1 + radial W1)")
-
-for topo_index, topology in enumerate(TOPOLOGIES):
-    axes[4].plot(
-        rollout_results[topology].horizons,
-        np.nanmean(rollout_results[topology].horizon_errors, axis=0),
-        marker="o",
-        linewidth=1.8,
-        label=topology,
+horizons_neb = rollout_results[TOPOLOGIES[0]].horizons
+dt = cells[0].dt
+for topo_idx, topology in enumerate(TOPOLOGIES):
+    rr = rollout_results[topology]
+    axes[1].plot(
+        horizons_neb * dt,
+        np.nanmean(rr.horizon_ensemble_mse, axis=0),
+        marker="o", linewidth=1.8, label=topology,
     )
-axes[4].set_xlabel("Forecast horizon (frames)")
-axes[4].set_ylabel("Combined axial/radial error (um^2)")
-axes[4].set_title("Held-out forecast error vs horizon")
-axes[4].legend(fontsize=8)
+axes[1].set_xlabel("Time from NEB (s)")
+axes[1].set_ylabel("Ensemble MSE (um^2)")
+axes[1].set_title("From-NEB rollout: when does the model break down?")
+axes[1].legend(fontsize=8)
 
-fig.suptitle("Aggregate rollout validation across held-out cells")
+fig.suptitle("Rollout validation across held-out cells")
 fig.tight_layout()
 plt.show()
 
+# Summary table (simplified)
+print(f"\nLOOCV rollout summary (sorted by primary criterion: ensemble MSE at h={H_PRIMARY})")
+print(f"  {'Topology':<22} {'Ens MSE@h=' + str(H_PRIMARY):>14} {'1-step CV MSE':>14}")
+print("-" * 55)
+for topology in sorted_topo_rollout:
+    print(f"  {topology:<22} {rollout_ensemble_mse_score[topology]:>14.5f} "
+          f"{cv_results[topology].mean_error:>14.8f}")
+
+# %% [markdown]
+# ### Rolling-window forecast horizon
+#
+# The from-NEB rollout above shows when the model breaks down from its
+# initial conditions.  The rolling-window forecast asks a complementary
+# question: over what timescales is the model accurate, independent of
+# position in the trajectory?
+#
+# For each held-out cell, we re-initialize from real positions at every
+# valid starting frame, simulate forward h steps, and compare to reality.
+
 # %%
-# Detailed LOOCV rollout table: per-metric means ± SE across held-out cells
-sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
-print("\nLOOCV rollout validation — detailed summary (mean ± SE across held-out cells)")
-print("=" * 120)
-print(f"{'Topology':<22} {'Ensemble MSE':>14} {'Path MSE':>14} {'Axial MSE':>14} {'Radial MSE':>14} {'Endpoint':>14} "
-      f"{'W1 axial':>14} {'W1 radial':>14}")
-print("-" * 135)
+from chromlearn.model_fitting.fit import forecast_horizon_cross_validate
 
-n_cv_cells = len(cells)
-for topology in sorted_topo_rollout:
-    rr = rollout_results[topology]
-    def _fmt(arr):
-        m = np.nanmean(arr)
-        se = np.nanstd(arr) / np.sqrt(np.sum(np.isfinite(arr)))
-        return f"{m:.4f} ± {se:.4f}"
-    print(f"  {topology:<22} {_fmt(rr.ensemble_mse):>14} {_fmt(rr.path_mse):>14} {_fmt(rr.axial_mse):>14} {_fmt(rr.radial_mse):>14} "
-          f"{_fmt(rr.endpoint_mean_error):>14} "
-          f"{_fmt(rr.final_axial_wasserstein):>14} {_fmt(rr.final_radial_wasserstein):>14}")
+FORECAST_HORIZONS = (1, 3, 5, 8, 10, 15, 20, 25, 30)
 
-print("=" * 120)
+print("Running rolling-window deterministic forecast validation "
+      f"({len(TOPOLOGIES)} topologies x {len(cells)} folds)...")
+forecast_results: dict[str, "ForecastHorizonResult"] = {}
+for topo_idx, topology in enumerate(TOPOLOGIES):
+    forecast_results[topology] = forecast_horizon_cross_validate(
+        cells,
+        configs[topology],
+        horizons=FORECAST_HORIZONS,
+        deterministic=True,
+    )
+    fr = forecast_results[topology]
+    print(f"  {topology:<22}  "
+          + "  ".join(f"h={h}: {np.nanmean(fr.ensemble_mse[:, hi]):.5f}"
+                      for hi, h in enumerate(fr.horizons)))
 
-# Horizon-resolved table
-print("\nHeld-out forecast error by horizon (mean ± SE, axial+radial combined)")
-horizons = rollout_results[TOPOLOGIES[0]].horizons
-header = f"{'Topology':<22}" + "".join(f"  h={h:<5}" for h in horizons)
-print(header)
-for topology in sorted_topo_rollout:
-    rr = rollout_results[topology]
-    vals = []
-    for hi in range(len(horizons)):
-        col = rr.horizon_errors[:, hi]
-        m = np.nanmean(col)
-        se = np.nanstd(col) / np.sqrt(np.sum(np.isfinite(col)))
-        vals.append(f"{m:.4f}±{se:.4f}")
-    print(f"  {topology:<22}" + "".join(f"  {v:<7}" for v in vals))
+# %%
+fig_fc, ax_fc = plt.subplots(figsize=(8, 5))
+for topo_idx, topology in enumerate(TOPOLOGIES):
+    fr = forecast_results[topology]
+    ax_fc.plot(
+        fr.horizons * dt,
+        np.nanmean(fr.ensemble_mse, axis=0),
+        marker="o", linewidth=1.8, label=topology,
+    )
+ax_fc.set_xlabel("Forecast horizon (s)")
+ax_fc.set_ylabel("Ensemble MSE (um^2)")
+ax_fc.set_title("Rolling-window forecast: over what timescales is the model accurate?")
+ax_fc.legend(fontsize=8)
+fig_fc.tight_layout()
+plt.show()
 
 
 # %% [markdown]
 # ## Metric concordance
 #
-# Do the different metrics agree on topology ranking?  We check two things:
-#
-# 1. **Rank concordance table**: topology ordering under each metric.
-# 2. **Horizon-resolved path MSE vs ensemble MSE**: path MSE saturates at the
-#    diffusion noise floor within a few frames, while ensemble MSE grows more
-#    slowly and remains discriminative between topologies at longer horizons.
-#    The gap between the two curves is the per-realization diffusion variance.
+# Do the primary metrics agree on topology ranking?
 
 # %%
-# Rank concordance table
 metric_rankings: dict[str, list[str]] = {}
-metric_rankings["Ensemble MSE"] = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
-metric_rankings["Path MSE"] = sorted(TOPOLOGIES, key=lambda t: rollout_mse_score[t])
+metric_rankings[f"Ens MSE @h={H_PRIMARY}"] = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
 metric_rankings["1-step CV"] = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
-metric_rankings["Endpoint"] = sorted(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
-metric_rankings["W1 (final)"] = sorted(TOPOLOGIES, key=lambda t: rollout_dist_score[t])
 
-print("Metric concordance — topology ranking under each criterion")
-print("=" * 90)
-header = f"{'Metric':<16}" + "".join(f"  {'#' + str(i+1):<20}" for i in range(len(TOPOLOGIES)))
+# Add forecast-horizon ranking at the longest horizon
+longest_hi = -1
+forecast_at_longest = {
+    t: float(np.nanmean(forecast_results[t].ensemble_mse[:, longest_hi]))
+    for t in TOPOLOGIES
+}
+metric_rankings["Forecast (long h)"] = sorted(TOPOLOGIES, key=lambda t: forecast_at_longest[t])
+
+print("Metric concordance -- topology ranking")
+print("=" * 80)
+header = f"{'Metric':<18}" + "".join(f"  {'#' + str(i+1):<18}" for i in range(len(TOPOLOGIES)))
 print(header)
-print("-" * 90)
+print("-" * 80)
 for metric_name, ranking in metric_rankings.items():
-    row = f"  {metric_name:<16}" + "".join(f"  {t:<20}" for t in ranking)
+    row = f"  {metric_name:<18}" + "".join(f"  {t:<18}" for t in ranking)
     print(row)
-print("=" * 90)
+print("=" * 80)
 
-# Check if all metrics agree on rank-1
 rank1_topologies = {r[0] for r in metric_rankings.values()}
 if len(rank1_topologies) == 1:
     print(f"All metrics agree: {rank1_topologies.pop()} is best.")
 else:
     print(f"Rank-1 picks: {', '.join(f'{m}: {r[0]}' for m, r in metric_rankings.items())}")
 
-# %%
-# Horizon-resolved path MSE vs ensemble MSE
-fig_hz, axes_hz = plt.subplots(1, 2, figsize=(14, 5))
-
-horizons_frames = rollout_results[TOPOLOGIES[0]].horizons
-dt = cells[0].dt
-
-for topo_idx, topology in enumerate(TOPOLOGIES):
-    rr = rollout_results[topology]
-    hz_ens = np.nanmean(rr.horizon_ensemble_mse, axis=0)
-    hz_path = np.nanmean(rr.horizon_path_mse, axis=0)
-
-    axes_hz[0].plot(
-        horizons_frames * dt, hz_ens,
-        marker="o", linewidth=1.8, label=topology,
-    )
-    axes_hz[1].plot(
-        horizons_frames * dt, hz_path,
-        marker="s", linewidth=1.8, label=topology,
-    )
-
-axes_hz[0].set_xlabel("Forecast horizon (s)")
-axes_hz[0].set_ylabel("3D position MSE (um²)")
-axes_hz[0].set_title("Ensemble-mean MSE vs horizon\n(drift bias only — discriminative)")
-axes_hz[0].legend(fontsize=8)
-
-axes_hz[1].set_xlabel("Forecast horizon (s)")
-axes_hz[1].set_ylabel("3D position MSE (um²)")
-axes_hz[1].set_title("Per-realization path MSE vs horizon\n(drift + diffusion noise — less discriminative)")
-axes_hz[1].legend(fontsize=8)
-
-fig_hz.suptitle("Horizon-resolved comparison: ensemble MSE isolates drift signal")
-fig_hz.tight_layout()
-plt.show()
-
-# %%
-# Overlay: both metrics for one topology to show the gap
-ref_topo = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])[0]
-rr_ref = rollout_results[ref_topo]
-hz_ens_ref = np.nanmean(rr_ref.horizon_ensemble_mse, axis=0)
-hz_path_ref = np.nanmean(rr_ref.horizon_path_mse, axis=0)
-
-fig_gap, ax_gap = plt.subplots(figsize=(8, 5))
-ax_gap.plot(horizons_frames * dt, hz_ens_ref, "o-", linewidth=2, color="C0",
-            label=f"Ensemble MSE ({ref_topo})")
-ax_gap.plot(horizons_frames * dt, hz_path_ref, "s--", linewidth=2, color="C1",
-            label=f"Path MSE ({ref_topo})")
-ax_gap.fill_between(
-    horizons_frames * dt, hz_ens_ref, hz_path_ref,
-    alpha=0.15, color="C3", label="Diffusion noise floor",
-)
-ax_gap.set_xlabel("Forecast horizon (s)")
-ax_gap.set_ylabel("3D position MSE (um²)")
-ax_gap.set_title(
-    "Path MSE vs ensemble MSE — the gap is diffusion variance\n"
-    "Ensemble MSE removes this topology-invariant noise, isolating drift error"
-)
-ax_gap.legend(fontsize=9)
-fig_gap.tight_layout()
-plt.show()
-
-noise_ratio = hz_path_ref[-1] / hz_ens_ref[-1] if hz_ens_ref[-1] > 0 else np.nan
-print(f"At horizon {horizons_frames[-1]} frames ({horizons_frames[-1] * dt:.0f}s):")
-print(f"  Path MSE / Ensemble MSE = {noise_ratio:.1f}x")
-print(f"  ~{100*(1 - 1/noise_ratio):.0f}% of path MSE is diffusion noise, "
-      "topology-invariant and non-discriminative.")
-
 
 # %% [markdown]
 # ## Model selection summary
 #
-# **Primary criterion**: leave-one-cell-out ensemble-mean MSE (simulated
-# positions averaged across replicates before comparing to reality,
-# cancelling model-side stochastic variance; the residual is drift bias
-# plus a topology-invariant data-noise floor).  This is a conditional-mean
-# trajectory score targeting drift/topology selection, not a full
-# distributional SDE criterion.
+# **Primary criterion**: leave-one-cell-out deterministic drift-rollout MSE at
+# horizon ``H_PRIMARY = 10`` frames (a single noise-free ODE forward integration
+# of the fitted drift, scored at a fixed forecast horizon). This is the
+# standard held-out metric in the dynamics-learning literature (NRI, Latent ODE,
+# ODE2VAE all report MSE at fixed multi-step horizons). The residual is drift
+# bias plus a topology-invariant data-noise floor; it scores the conditional
+# mean for drift/topology selection, not the full distributional SDE.
 #
-# **Secondary quantitative checks**: per-rep path MSE, one-step velocity MSE,
-# endpoint mismatch, final-frame distributional metrics, and horizon-specific
-# rollout errors.
+# The horizon-resolved curve above shows whether the topology ranking is
+# stable across horizons; we treat ``H_PRIMARY`` as a parameter, with the
+# curve as a sweep diagnostic for the supplement.
+#
+# **Secondary**: one-step velocity MSE and rolling-window forecast horizon.
 #
 # **Qualitative checks**: full-data forward simulations and kernel-shape /
 # physics plausibility (above).
@@ -1031,93 +954,51 @@ sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
 best_mean_topo = sorted_topo[0]
 paired = paired_cv_differences(cv_results, reference=best_mean_topo)
 best_rollout_topo = sorted_topo_rollout[0]
-best_endpoint_topo = min(TOPOLOGIES, key=lambda t: rollout_endpoint_score[t])
-best_dist_topo = min(TOPOLOGIES, key=lambda t: rollout_dist_score[t])
 
-print("Primary criterion: leave-one-cell-out ensemble-mean MSE (drift bias only)")
-print("=" * 115)
-print(f"  {'Topology':<22} {'Ens MSE':>14} {'vs best':>9} {'Path MSE':>14} {'Endpoint':>10} {'W1 total':>10}")
-print("-" * 115)
-
+print(f"Primary criterion: leave-one-cell-out drift-rollout ensemble MSE at h={H_PRIMARY}")
+print("=" * 80)
 best_rollout_score = rollout_ensemble_mse_score[best_rollout_topo]
+print(f"  {'Topology':<22} {'Ens MSE@h=' + str(H_PRIMARY):>14} {'vs best':>9} {'1-step CV':>14}")
+print("-" * 65)
 for t in sorted_topo_rollout:
     rel_pct = 100.0 * (rollout_ensemble_mse_score[t] - best_rollout_score) / best_rollout_score if best_rollout_score > 0 else np.nan
-    print(f"  {t:<22} {rollout_ensemble_mse_score[t]:>14.4f} {rel_pct:>+8.1f}% "
-          f"{rollout_mse_score[t]:>14.4f} "
-          f"{rollout_endpoint_score[t]:>10.4f} {rollout_dist_score[t]:>10.4f}")
+    print(f"  {t:<22} {rollout_ensemble_mse_score[t]:>14.5f} {rel_pct:>+8.1f}% "
+          f"{cv_results[t].mean_error:>14.8f}")
 
-print("=" * 115)
-print(f"  Primary rollout selector: {best_rollout_topo}")
-print("  Path MSE, endpoint, and W1 are reported separately as supporting diagnostics.")
-
-# Paired foldwise differences for rollout ensemble MSE
-ref_ens = rollout_results[best_rollout_topo].ensemble_mse
-print(f"\nPaired foldwise differences in ensemble MSE (reference: {best_rollout_topo})")
-print(f"  {'Topology':<22} {'Ens MSE':>12} {'Δ vs best':>12} {'SE(Δ)':>12} {'Δ/SE(Δ)':>10} {'Significant?':>14}")
+# Paired foldwise differences for rollout ensemble MSE at the primary horizon
+ref_ens = rollout_results[best_rollout_topo].horizon_ensemble_mse[:, _primary_h_idx]
+print(f"\nPaired foldwise differences in ensemble MSE @h={H_PRIMARY} "
+      f"(reference: {best_rollout_topo})")
+print(f"  {'Topology':<22} {'mean diff':>12} {'SE(diff)':>12} {'diff/SE':>10}")
 for topology in sorted_topo_rollout:
     rr = rollout_results[topology]
-    diff = rr.ensemble_mse - ref_ens
+    diff = rr.horizon_ensemble_mse[:, _primary_h_idx] - ref_ens
     valid = np.isfinite(diff)
     n = int(valid.sum())
     mean_diff = float(np.mean(diff[valid])) if n > 0 else np.inf
     se_diff = float(np.std(diff[valid], ddof=1) / np.sqrt(n)) if n > 1 else np.inf
     ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
-    sig = "—" if topology == best_rollout_topo else ("yes" if abs(ratio) > 2.0 else "no")
-    print(f"  {topology:<22} {rollout_ensemble_mse_score[topology]:>12.4f} "
-          f"{mean_diff:>+12.4e} {se_diff:>12.4e} {ratio:>10.2f} {sig:>14}")
+    print(f"  {topology:<22} {mean_diff:>+12.4e} {se_diff:>12.4e} {ratio:>10.2f}")
 
-print("\nSecondary diagnostic: leave-one-cell-out 1-step velocity MSE")
-print(f"  {'Topology':<22} {'CV MSE':>12} {'vs null':>9} {'SE':>10} {'Δ vs best':>10} {'SE(Δ)':>10} {'Δ/SE(Δ)':>8}")
-for topology in sorted_topo:
-    r = cv_results[topology]
-    mean_diff, se_diff = paired[topology]
-    ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
-    gain_pct = 100.0 * (zero_baseline_mean - r.mean_error) / zero_baseline_mean if zero_baseline_mean > 0 else np.nan
-    print(f"  {topology:<22} {r.mean_error:>12.8f} {gain_pct:>+8.2f}% {r.fold_se:>10.2e} "
-          f"{mean_diff:>+10.2e} {se_diff:>10.2e} {ratio:>8.2f}")
-print("  The one-step loss remains useful, but in this dataset it is less discriminative than the rollout MSE.")
-
-print("\nSynthesis")
-print("=" * 115)
-print(f"  Primary selector (ensemble MSE): {best_rollout_topo}")
-print(f"  Best 1-step CV score:            {best_mean_topo}")
-print(f"  Best rollout endpoint score:     {best_endpoint_topo}")
-print(f"  Best rollout final W1 score:     {best_dist_topo}")
-if best_rollout_topo == best_endpoint_topo == best_dist_topo:
-    print(f"  The rollout diagnostics agree on {best_rollout_topo}.")
-else:
-    print("  The rollout diagnostics are not fully unanimous, but they point to the same small subset of topologies.")
-if best_mean_topo == best_rollout_topo:
-    print("  The rollout selector and the 1-step diagnostic agree.")
-else:
-    print("  The rollout selector and the 1-step diagnostic do not agree.")
-    print("  The 1-step CV gap is small, while rollout is more discriminative on long-horizon behavior.")
-
-# Parsimony note: if the gap between the simplest plausible model and the
-# winner is within ~1 SE, prefer the simpler model.
-simplest_topo = "poles"  # fewest parameters: no xx term, no midpoint
+# Parsimony note
+simplest_topo = "poles"
 if best_rollout_topo != simplest_topo:
-    diff_simp = rollout_results[simplest_topo].ensemble_mse - ref_ens
+    diff_simp = rollout_results[simplest_topo].horizon_ensemble_mse[:, _primary_h_idx] - ref_ens
     valid_simp = np.isfinite(diff_simp)
     n_simp = int(valid_simp.sum())
     mean_simp = float(np.mean(diff_simp[valid_simp])) if n_simp > 0 else np.inf
     se_simp = float(np.std(diff_simp[valid_simp], ddof=1) / np.sqrt(n_simp)) if n_simp > 1 else np.inf
     ratio_simp = mean_simp / se_simp if se_simp > 0 and se_simp < np.inf else 0.0
-    if abs(ratio_simp) < 1.0:
-        print(f"\n  Parsimony note: {simplest_topo} is within 1 SE of {best_rollout_topo} "
-              f"(Δ/SE = {ratio_simp:.2f}). The simpler model is not significantly worse.")
-    elif abs(ratio_simp) < 2.0:
-        print(f"\n  Parsimony note: {simplest_topo} is between 1-2 SE of {best_rollout_topo} "
-              f"(Δ/SE = {ratio_simp:.2f}). The gap is suggestive but not definitive.")
+    if abs(ratio_simp) < 2.0:
+        print(f"\n  Parsimony: {simplest_topo} is within 2 SE of {best_rollout_topo} "
+              f"(diff/SE = {ratio_simp:.2f}). Prefer the simpler model.")
     else:
-        print(f"\n  Parsimony note: {simplest_topo} is >2 SE worse than {best_rollout_topo} "
-              f"(Δ/SE = {ratio_simp:.2f}). The more complex model is justified.")
-print("=" * 105)
+        print(f"\n  Parsimony: {simplest_topo} is >2 SE worse than {best_rollout_topo} "
+              f"(diff/SE = {ratio_simp:.2f}). The more complex model is justified.")
+print("=" * 80)
 
 best_topology = best_rollout_topo
-print(f"\nWith only {len(TOPOLOGIES)} candidates, selection-level overfitting is unlikely.")
-print("If the gap between top candidates is within ~1 SE, the ranking is not definitive;")
-print("in that case, prefer the simpler (fewer-parameter) model.")
+print(f"\nSelected topology: {best_topology}")
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")

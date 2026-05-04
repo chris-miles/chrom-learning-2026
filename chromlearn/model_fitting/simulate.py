@@ -27,11 +27,16 @@ def simulate_trajectories(
     dt: float,
     D_x: float,
     rng: np.random.Generator | None = None,
+    deterministic: bool = False,
 ) -> np.ndarray:
-    """Euler-Maruyama forward simulation of overdamped Langevin dynamics.
+    """Forward simulation of overdamped Langevin dynamics.
 
-    At each step: ``X(t+dt) = X(t) + F(X(t)) * dt + sqrt(2 D dt) * xi``
+    When *deterministic* is False (default), uses Euler-Maruyama:
+    ``X(t+dt) = X(t) + F(X(t)) * dt + sqrt(2 D dt) * xi``
     where ``xi ~ N(0, I)``.
+
+    When *deterministic* is True, integrates the deterministic drift ODE:
+    ``X(t+dt) = X(t) + F(X(t)) * dt``  (forward Euler, no noise).
 
     Args:
         kernel_xx: ``f_xx(r)`` -- chromosome-chromosome kernel.  Takes a 1-D
@@ -42,19 +47,21 @@ def simulate_trajectories(
         x0: Initial chromosome positions, shape ``(N, 3)``.
         n_steps: Number of time steps to simulate.
         dt: Time step size in seconds.
-        D_x: Isotropic diffusion coefficient.
-        rng: Random number generator.
+        D_x: Isotropic diffusion coefficient (ignored when *deterministic*).
+        rng: Random number generator (unused when *deterministic*).
+        deterministic: If True, integrate the noise-free ODE instead of the
+            stochastic Langevin equation.
 
     Returns:
         Trajectory array of shape ``(n_steps+1, 3, N)``.
     """
-    if rng is None:
+    if not deterministic and rng is None:
         rng = np.random.default_rng()
 
     n_chromosomes = x0.shape[0]
     trajectory = np.zeros((n_steps + 1, 3, n_chromosomes), dtype=np.float64)
     trajectory[0] = x0.T
-    noise_scale = np.sqrt(2.0 * D_x * dt)
+    noise_scale = 0.0 if deterministic else np.sqrt(2.0 * D_x * dt)
 
     for step in range(n_steps):
         # Work in (N, 3) layout for vectorized pairwise arithmetic.
@@ -87,10 +94,11 @@ def simulate_trajectories(
             f_xy[pair_mask_xy] = kernel_xy(dist_xy[pair_mask_xy])
         forces += np.sum(direction_xy * f_xy[:, :, np.newaxis], axis=1)
 
-        # Preserve the historical RNG draw order from the original
-        # implementation, which sampled in (3, N) layout.
-        noise = noise_scale * rng.standard_normal(size=(3, n_chromosomes)).T
-        trajectory[step + 1] = (positions + forces * dt + noise).T
+        if deterministic:
+            trajectory[step + 1] = (positions + forces * dt).T
+        else:
+            noise = noise_scale * rng.standard_normal(size=(3, n_chromosomes)).T
+            trajectory[step + 1] = (positions + forces * dt + noise).T
 
     return trajectory
 
@@ -114,7 +122,8 @@ def kernel_callables(model):
     return kernel_xx, kernel_xy
 
 
-def simulate_cell(cell, model, rng: np.random.Generator | None = None):
+def simulate_cell(cell, model, rng: np.random.Generator | None = None,
+                   deterministic: bool = False):
     """Simulate a cell forward using a fitted model and its real partner trajectories.
 
     Uses the scalar diffusion coefficient ``model.D_x`` and the cell's time
@@ -122,21 +131,25 @@ def simulate_cell(cell, model, rng: np.random.Generator | None = None):
     :class:`FittedModel` is ignored; variable D(x) is analysis-only (see
     notebook 06) and not used during simulation rollouts.
 
+    When *deterministic* is True, integrates the noise-free drift ODE instead
+    of the stochastic Langevin equation.
+
     Args:
         cell: A TrimmedCell whose centrioles provide the partner positions and
             whose first frame provides the initial chromosome positions.
         model: A FittedModel with topology, kernels, D_x, and dt.
-        rng: Random number generator.
+        rng: Random number generator (unused when *deterministic*).
+        deterministic: If True, integrate the noise-free ODE.
 
     Returns:
-        ``(trajectory, sim_cell)`` — the raw trajectory array ``(T, 3, N)``
+        ``(trajectory, sim_cell)`` -- the raw trajectory array ``(T, 3, N)``
         and a TrimmedCell wrapping it (with the same centriole/metadata as the
         input cell).
     """
     from chromlearn.io.trajectory import TrimmedCell as _TrimmedCell
     from chromlearn.io.trajectory import get_partners
 
-    if rng is None:
+    if not deterministic and rng is None:
         rng = np.random.default_rng()
 
     kernel_xx, kernel_xy = kernel_callables(model)
@@ -150,6 +163,7 @@ def simulate_cell(cell, model, rng: np.random.Generator | None = None):
         dt=cell.dt,
         D_x=model.D_x,
         rng=rng,
+        deterministic=deterministic,
     )
     sim_cell = _TrimmedCell(
         cell_id=cell.cell_id,
