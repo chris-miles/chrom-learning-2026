@@ -26,10 +26,13 @@ from chromlearn.model_fitting.diffusion import local_diffusion_estimates
 from chromlearn.model_fitting.features import build_design_matrix
 from chromlearn.model_fitting.fit import (
     CVResult,
+    ForecastHorizonResult,
     RolloutCVResult,
     cross_validate,
+    evaluate_all_loocv,
     fit_kernels,
     fit_model,
+    forecast_horizon_cross_validate,
     rollout_cross_validate,
 )
 from chromlearn.model_fitting.model import FittedModel
@@ -46,7 +49,9 @@ plt.rcParams["figure.dpi"] = 110
 # Basis domains must match NB04 (R_MIN=0.3, R_MAX=15.0) to ensure
 # robustness checks probe the same model, not a different domain.
 CONDITION = "rpe18_ctr"          # Control-condition cells used in the robustness sweeps.
-WINNING_TOPOLOGY = "poles"       # Baseline topology imported from NB04.
+WINNING_TOPOLOGY = "poles_and_chroms"  # Base FitConfig topology; short-range variant is encoded by the envelope (matches NB04's poles_and_chroms_enveloped winner).
+ENVELOPE_R0_XX = 1.5             # Center of the smooth steric envelope on the xx kernel (um); matches NB04.
+ENVELOPE_W_XX = 0.3              # Transition width of the envelope (um); matches NB04.
 FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
 N_BASIS_XX = 10                  # Number of spline basis functions for chromosome-chromosome kernels.
 N_BASIS_XY = 10                  # Number of spline basis functions for pole-chromosome kernels.
@@ -64,6 +69,8 @@ print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_
 
 BASE_CONFIG = FitConfig(
     topology=WINNING_TOPOLOGY,
+    envelope_r0_xx=ENVELOPE_R0_XX,
+    envelope_w_xx=ENVELOPE_W_XX,
     n_basis_xx=N_BASIS_XX,
     n_basis_xy=N_BASIS_XY,
     r_min_xx=R_MIN,
@@ -82,6 +89,7 @@ BASE_CONFIG = FitConfig(
 ROLLOUT_HORIZONS = (1, 5, 10, 20)
 H_PRIMARY = 10  # Primary held-out horizon (frames). Matches NB04.
 assert H_PRIMARY in ROLLOUT_HORIZONS
+FORECAST_HORIZONS = (H_PRIMARY,)  # Rolling-window forecast scored at H_PRIMARY only.
 
 
 def _h_primary_idx(result: RolloutCVResult) -> int:
@@ -102,8 +110,8 @@ def rollout_path_se(result: RolloutCVResult) -> float:
 
 
 def rollout_ensemble_score(result: RolloutCVResult) -> float:
-    """Primary criterion: deterministic drift-rollout ensemble MSE at
-    horizon H_PRIMARY frames (matches NB04)."""
+    """Diagnostic: deterministic drift-rollout ensemble MSE at horizon
+    H_PRIMARY frames (Alex's docx anchor).  Primary criterion is path MSE."""
     h = _h_primary_idx(result)
     return float(np.nanmean(result.horizon_ensemble_mse[:, h]))
 
@@ -124,6 +132,22 @@ def rollout_w1_score(result: RolloutCVResult) -> float:
         np.nanmean(result.final_axial_wasserstein)
         + np.nanmean(result.final_radial_wasserstein)
     )
+
+
+def forecast_score(result: ForecastHorizonResult) -> float:
+    """Rolling-window forecast ensemble MSE at H_PRIMARY (LOOCV)."""
+    h_idx = list(result.horizons).index(H_PRIMARY)
+    return float(np.nanmean(result.ensemble_mse[:, h_idx]))
+
+
+def forecast_se(result: ForecastHorizonResult) -> float:
+    """SE across held-out cells for the forecast ensemble MSE at H_PRIMARY."""
+    h_idx = list(result.horizons).index(H_PRIMARY)
+    vals = result.ensemble_mse[:, h_idx]
+    valid = vals[np.isfinite(vals)]
+    if valid.size == 0:
+        return np.inf
+    return float(np.nanstd(valid) / np.sqrt(valid.size))
 
 
 def run_rollout_cv(
@@ -155,14 +179,15 @@ def run_rollout_cv(
 # output kernel function predictions, so a coefficient-norm penalty has no
 # physical role here.
 #
-# We use the deterministic drift-rollout MSE at the primary horizon (matching
-# NB04) as the primary selection target.  W1 and one-step CV MSE are recorded
-# alongside for comparison.
+# We use the deterministic drift-rollout path MSE (full-trajectory ensemble
+# MSE, matching NB04) as the primary selection target.  Ensemble MSE @ h=10,
+# rolling-window forecast, W1, and 1-step CV are recorded as supporting
+# diagnostics.
 
 # %%
 from itertools import product as _product  # noqa: E402
 
-N_BASIS_GRID = [4, 8, 16, 32, 64]
+N_BASIS_GRID = [6, 8, 10, 12, 16]
 LAMBDA_ROUGH_GRID = np.array([1e-3, 1e-2, 1e-1, 1e0, 1e1, 1e2])
 
 grid_configs = list(_product(N_BASIS_GRID, LAMBDA_ROUGH_GRID))
@@ -175,14 +200,27 @@ def _run_one_grid_point(
     cells_in,
     base_cfg,
     rollout_horizons,
+    forecast_horizons,
     k_folds,
     compute_one_step_cv,
     nb,
     lro,
 ):
-    """Worker function for parallel grid sweep (all args explicit for joblib)."""
+    """Worker function for parallel grid sweep (all args explicit for joblib).
+
+    Uses evaluate_all_loocv to fit ONCE per fold and evaluate all three
+    metrics (1-step CV, from-NEB rollout, rolling-window forecast) against
+    the same FittedModel.  Numerically equivalent to calling cross_validate /
+    rollout_cross_validate (deterministic=True) / forecast_horizon_cross_validate
+    (deterministic=True) separately, but skips the redundant refits.
+    Note: k_folds is ignored (LOO only); forecast_horizon_cross_validate
+    has no k_folds parameter, so to keep all three metrics aligned we
+    always run LOOCV in this worker.
+    """
     cfg = FitConfig(
         topology=base_cfg.topology,
+        envelope_r0_xx=base_cfg.envelope_r0_xx,
+        envelope_w_xx=base_cfg.envelope_w_xx,
         n_basis_xx=nb,
         n_basis_xy=nb,
         r_min_xx=base_cfg.r_min_xx,
@@ -198,18 +236,13 @@ def _run_one_grid_point(
         diffusion_mode=base_cfg.diffusion_mode,
         dt=base_cfg.dt,
     )
-    cv_result = (
-        cross_validate(cells_in, cfg, k_folds=k_folds)
-        if compute_one_step_cv else None
-    )
-    rollout_result = rollout_cross_validate(
+    cv_result, rollout_result, forecast_result = evaluate_all_loocv(
         cells_in, cfg,
-        horizons=rollout_horizons,
-        k_folds=k_folds,
-        deterministic=True,
-        n_jobs=1,  # outer Parallel handles concurrency
+        rollout_horizons=rollout_horizons,
+        forecast_horizons=forecast_horizons,
+        compute_one_step=compute_one_step_cv,
     )
-    return (nb, lro), cv_result, rollout_result
+    return (nb, lro), cv_result, rollout_result, forecast_result
 
 
 import os  # noqa: E402
@@ -224,6 +257,7 @@ def _run_grid_sweep(
     base_cfg,
     grid_configs_in,
     rollout_horizons,
+    forecast_horizons,
     *,
     k_folds: int | None,
     label: str,
@@ -231,82 +265,104 @@ def _run_grid_sweep(
     print_config_scores: bool = True,
     joblib_verbose: int = 10,
     announce: bool = True,
-) -> tuple[dict[tuple, CVResult], dict[tuple, RolloutCVResult]]:
+) -> tuple[
+    dict[tuple, CVResult],
+    dict[tuple, RolloutCVResult],
+    dict[tuple, ForecastHorizonResult],
+]:
     """Run the joint (n_basis, lambda_rough) grid under a chosen CV design."""
     if announce:
         print(f"Running {label} grid sweep with {N_WORKERS} parallel workers (joblib/loky)...")
     grid_cv_local: dict[tuple, CVResult] = {}
     grid_rollout_local: dict[tuple, RolloutCVResult] = {}
+    grid_forecast_local: dict[tuple, ForecastHorizonResult] = {}
 
     results = Parallel(n_jobs=N_WORKERS, verbose=joblib_verbose)(
         delayed(_run_one_grid_point)(
-            cells_in, base_cfg, rollout_horizons,
+            cells_in, base_cfg, rollout_horizons, forecast_horizons,
             k_folds, compute_one_step_cv, nb, lro,
         )
         for nb, lro in grid_configs_in
     )
 
-    for key, cv_result, rollout_result in results:
+    for key, cv_result, rollout_result, forecast_result in results:
         if cv_result is not None:
             grid_cv_local[key] = cv_result
         grid_rollout_local[key] = rollout_result
+        grid_forecast_local[key] = forecast_result
         if print_config_scores:
             nb, lro = key
-            score_line = (
+            cv_part = (
+                f"  1-step={cv_result.mean_error:.4e}"
+                if cv_result is not None else ""
+            )
+            print(
                 f"  n_basis={nb}, rough={lro:.0e}"
+                f"{cv_part}"
                 f"  ens_MSE={rollout_ensemble_score(rollout_result):.4e}"
+                f"  forecast={forecast_score(forecast_result):.4e}"
                 f"  path_MSE={rollout_path_score(rollout_result):.4e}"
                 f"  W1={rollout_w1_score(rollout_result):.4e}"
             )
-            if cv_result is not None:
-                score_line = (
-                    f"  n_basis={nb}, rough={lro:.0e}"
-                    f"  1-step={cv_result.mean_error:.4e}"
-                    f"  ens_MSE={rollout_ensemble_score(rollout_result):.4e}"
-                    f"  path_MSE={rollout_path_score(rollout_result):.4e}"
-                    f"  W1={rollout_w1_score(rollout_result):.4e}"
-                )
-            print(score_line)
 
     if announce:
         print(f"{label} grid sweep complete: {len(grid_rollout_local)} configs evaluated.")
-    return grid_cv_local, grid_rollout_local
+    return grid_cv_local, grid_rollout_local, grid_forecast_local
 
 
-grid_cv, grid_rollout = _run_grid_sweep(
+grid_cv, grid_rollout, grid_forecast = _run_grid_sweep(
     cells,
     BASE_CONFIG,
     grid_configs,
     ROLLOUT_HORIZONS,
+    FORECAST_HORIZONS,
     k_folds=None,
     label="LOO",
 )
 
 # %%
-# Primary selection: ensemble-mean MSE at H_PRIMARY
-best_key = min(grid_configs, key=lambda k: rollout_ensemble_score(grid_rollout[k]))
+# Report winners under each metric.  Primary criterion is path MSE
+# (full-trajectory ensemble MSE), matching NB04.  The h=10 ensemble MSE,
+# rolling-window forecast, and 1-step CV are reported as supporting
+# diagnostics.
+#   - Path MSE (PRIMARY): mean squared error over all frames, full
+#     trajectory.  Matches NB04's selection criterion.
+#   - 1-step CV: instantaneous drift accuracy (single-frame prediction).
+#   - From-NEB ensemble MSE @ H_PRIMARY: Alex's diagnostic horizon (50 s).
+#   - Rolling-window forecast @ H_PRIMARY: error h frames ahead, averaged
+#     over all starting points (restart from real positions each window).
+best_key = min(grid_configs, key=lambda k: rollout_path_score(grid_rollout[k]))
 best_n_basis_rollout, best_rough_rollout = best_key
 best_key_cv = min(grid_configs, key=lambda k: grid_cv[k].mean_error)
-best_key_path = min(grid_configs, key=lambda k: rollout_path_score(grid_rollout[k]))
+best_key_ens = min(grid_configs, key=lambda k: rollout_ensemble_score(grid_rollout[k]))
+best_key_forecast = min(grid_configs, key=lambda k: forecast_score(grid_forecast[k]))
 
-print(f"\nBest by ensemble MSE @h={H_PRIMARY}:  n_basis={best_key[0]}, "
+print(f"\nBest by path MSE (PRIMARY):                     n_basis={best_key[0]}, "
       f"lambda_rough={best_key[1]:.2e}  "
-      f"(ens MSE = {rollout_ensemble_score(grid_rollout[best_key]):.4e})")
-print(f"Best by rollout path MSE:    n_basis={best_key_path[0]}, "
-      f"lambda_rough={best_key_path[1]:.2e}  "
-      f"(path MSE = {rollout_path_score(grid_rollout[best_key_path]):.4e})")
-print(f"Best by 1-step CV:           n_basis={best_key_cv[0]}, "
+      f"(path MSE = {rollout_path_score(grid_rollout[best_key]):.4e})")
+print(f"Best by ensemble MSE @h={H_PRIMARY} (from NEB): n_basis={best_key_ens[0]}, "
+      f"lambda_rough={best_key_ens[1]:.2e}  "
+      f"(ens MSE = {rollout_ensemble_score(grid_rollout[best_key_ens]):.4e})")
+print(f"Best by rolling-window forecast @h={H_PRIMARY}: n_basis={best_key_forecast[0]}, "
+      f"lambda_rough={best_key_forecast[1]:.2e}  "
+      f"(forecast MSE = {forecast_score(grid_forecast[best_key_forecast]):.4e})")
+print(f"Best by 1-step CV:                              n_basis={best_key_cv[0]}, "
       f"lambda_rough={best_key_cv[1]:.2e}  "
       f"(CV MSE = {grid_cv[best_key_cv].mean_error:.4e})")
+print(
+    "\nNOTE: NB06 and NB07 hard-code their own (n_basis, lambda_rough) and "
+    "envelope params.  After this sweep, manually update those notebooks to "
+    "the chosen winner before re-running them."
+)
 
 # %%
-# 2D heatmap: n_basis x lambda_rough
+# 2D heatmap: n_basis x lambda_rough, primary criterion (path MSE)
 mat_nro = np.full((len(LAMBDA_ROUGH_GRID), len(N_BASIS_GRID)), np.nan)
 for xi, nb in enumerate(N_BASIS_GRID):
     for yi, lro in enumerate(LAMBDA_ROUGH_GRID):
         key = (nb, lro)
         if key in grid_rollout:
-            mat_nro[yi, xi] = rollout_ensemble_score(grid_rollout[key])
+            mat_nro[yi, xi] = rollout_path_score(grid_rollout[key])
 
 fig_slice, ax_slice = plt.subplots(1, 1, figsize=(7, 5))
 im = ax_slice.imshow(
@@ -318,7 +374,7 @@ im = ax_slice.imshow(
 )
 ax_slice.set_xlabel("n_basis")
 ax_slice.set_ylabel("log10(lambda_rough)")
-ax_slice.set_title(f"Ensemble MSE @h={H_PRIMARY} across joint grid")
+ax_slice.set_title("Path MSE (primary criterion) across joint grid")
 fig_slice.colorbar(im, ax=ax_slice, shrink=0.8)
 fig_slice.tight_layout()
 plt.show()
@@ -326,7 +382,7 @@ plt.show()
 # %% [markdown]
 # ### 1D marginal views
 #
-# For each hyperparameter, show the best ensemble MSE achieved at each
+# For each hyperparameter, show the best path MSE achieved at each
 # value (minimizing over the other one). The min-max band shows the spread
 # across the other axis.
 
@@ -355,7 +411,7 @@ def _plot_marginal(ax, x, lo, mid, hi, color, xlabel, ylabel, title, xlog=False)
         ax.set_xscale("log")
 
 
-grid_scores_loo = {k: rollout_ensemble_score(grid_rollout[k]) for k in grid_configs}
+grid_scores_loo = {k: rollout_path_score(grid_rollout[k]) for k in grid_configs}
 
 nb_lo, nb_mid, nb_hi = _marginal_stats(grid_scores_loo, grid_configs, 0, N_BASIS_GRID)
 lro_lo, lro_mid, lro_hi = _marginal_stats(grid_scores_loo, grid_configs, 1, LAMBDA_ROUGH_GRID)
@@ -364,10 +420,10 @@ nb_best, lro_best = nb_lo, lro_lo
 
 fig_marginal, axes_m = plt.subplots(1, 2, figsize=(11, 4))
 _plot_marginal(axes_m[0], N_BASIS_GRID, nb_lo, nb_mid, nb_hi, "C0",
-               "n_basis", f"Ensemble MSE @h={H_PRIMARY}", "n_basis marginal")
+               "n_basis", "Path MSE (primary)", "n_basis marginal")
 axes_m[0].set_xticks(N_BASIS_GRID)
 _plot_marginal(axes_m[1], LAMBDA_ROUGH_GRID, lro_lo, lro_mid, lro_hi, "C2",
-               "lambda_rough", f"Ensemble MSE @h={H_PRIMARY}", "lambda_rough marginal", xlog=True)
+               "lambda_rough", "Path MSE (primary)", "lambda_rough marginal", xlog=True)
 
 fig_marginal.suptitle("1D marginals from the joint grid (mean with min-max band)", fontsize=12)
 fig_marginal.tight_layout()
@@ -377,7 +433,7 @@ plt.show()
 # %% [markdown]
 # ### Kernel shape stability across the grid
 #
-# Fit each of the 144 grid configs on all cells and plot the resulting
+# Fit each of the n_grid configs on all cells and plot the resulting
 # chrom-pole kernel.  The spaghetti cloud shows the full variation; the
 # marginal slices color by the swept parameter.
 
@@ -389,6 +445,8 @@ grid_models: dict[tuple, FittedModel] = {}
 for nb, lro in grid_configs:
     cfg = FitConfig(
         topology=BASE_CONFIG.topology,
+        envelope_r0_xx=BASE_CONFIG.envelope_r0_xx,
+        envelope_w_xx=BASE_CONFIG.envelope_w_xx,
         n_basis_xx=nb,
         n_basis_xy=nb,
         r_min_xx=BASE_CONFIG.r_min_xx,
@@ -421,7 +479,7 @@ for key in grid_configs:
     model = grid_models[key]
     if _topology_has_chroms_grid:
         r_xx = np.linspace(model.basis_xx.r_min, model.basis_xx.r_max, _N_EVAL)
-        f_xx = model.basis_xx.evaluate(r_xx) @ model.theta_xx
+        f_xx = model.evaluate_kernel("xx", r_xx)
         ax_sp[0, 0].plot(r_xx, f_xx, color="0.75", linewidth=0.4, alpha=0.5)
     r_xy = np.linspace(model.basis_xy.r_min, model.basis_xy.r_max, _N_EVAL)
     f_xy = model.basis_xy.evaluate(r_xy) @ model.theta_xy
@@ -433,7 +491,7 @@ for key in grid_configs:
 best_model = grid_models[best_key]
 if _topology_has_chroms_grid:
     r_xx = np.linspace(best_model.basis_xx.r_min, best_model.basis_xx.r_max, _N_EVAL)
-    f_xx = best_model.basis_xx.evaluate(r_xx) @ best_model.theta_xx
+    f_xx = best_model.evaluate_kernel("xx", r_xx)
     ax_sp[0, 0].plot(r_xx, f_xx, color="C3", linewidth=2.5, label="best config")
     ax_sp[0, 0].axhline(0, color="0.5", linestyle="--", linewidth=0.6)
     ax_sp[0, 0].set_xlabel("Distance (um)")
@@ -519,6 +577,8 @@ models_mode: dict[str, object] = {}
 for idx, mode in enumerate(ESTIMATOR_MODES, start=1):
     cfg = FitConfig(
         topology=BASE_CONFIG.topology,
+        envelope_r0_xx=BASE_CONFIG.envelope_r0_xx,
+        envelope_w_xx=BASE_CONFIG.envelope_w_xx,
         n_basis_xx=BASE_CONFIG.n_basis_xx,
         n_basis_xy=BASE_CONFIG.n_basis_xy,
         r_min_xx=BASE_CONFIG.r_min_xx,
@@ -547,9 +607,8 @@ for idx, mode in enumerate(ESTIMATOR_MODES, start=1):
     )
     rollout_mode[mode] = run_rollout_cv(cells, cfg)
     print(
-        f"    ensemble MSE = {rollout_ensemble_score(rollout_mode[mode]):.4e}"
-        f" ± {rollout_ensemble_se(rollout_mode[mode]):.4e}"
-        f"  path MSE = {rollout_path_score(rollout_mode[mode]):.4e}"
+        f"    path MSE = {rollout_path_score(rollout_mode[mode]):.4e}"
+        f"  ens MSE @h={H_PRIMARY} = {rollout_ensemble_score(rollout_mode[mode]):.4e}"
         f"  W1 total = {rollout_w1_score(rollout_mode[mode]):.4e}",
         flush=True,
     )
@@ -563,8 +622,8 @@ plt.show()
 # %%
 fig_mode_rollout, ax_mode_rollout = plt.subplots(figsize=(7, 4))
 mode_labels = list(ESTIMATOR_MODES)
-mode_rollout_means = [rollout_ensemble_score(rollout_mode[m]) for m in mode_labels]
-mode_rollout_stds = [rollout_ensemble_se(rollout_mode[m]) for m in mode_labels]
+mode_rollout_means = [rollout_path_score(rollout_mode[m]) for m in mode_labels]
+mode_rollout_stds = [rollout_path_se(rollout_mode[m]) for m in mode_labels]
 ax_mode_rollout.bar(
     np.arange(len(mode_labels)),
     mode_rollout_means,
@@ -574,9 +633,9 @@ ax_mode_rollout.bar(
 )
 ax_mode_rollout.set_xticks(np.arange(len(mode_labels)))
 ax_mode_rollout.set_xticklabels(mode_labels)
-ax_mode_rollout.set_ylabel("Leave-one-out ensemble MSE")
+ax_mode_rollout.set_ylabel("Leave-one-out path MSE (primary)")
 ax_mode_rollout.set_title(
-    "Sweep 2 — Ensemble MSE comparison  (deterministic drift rollout)"
+    "Sweep 2 — Path MSE comparison  (deterministic drift rollout)"
 )
 fig_mode_rollout.tight_layout()
 plt.show()
@@ -598,8 +657,7 @@ for mode in ESTIMATOR_MODES:
 
     if topology_has_chroms:
         r_xx = np.linspace(model.basis_xx.r_min, model.basis_xx.r_max, n_points)
-        phi_xx = model.basis_xx.evaluate(r_xx)
-        axes_mode_k[0, 0].plot(r_xx, phi_xx @ model.theta_xx,
+        axes_mode_k[0, 0].plot(r_xx, model.evaluate_kernel("xx", r_xx),
                                color=color, linewidth=1.8, label=mode)
 
     r_xy = np.linspace(model.basis_xy.r_min, model.basis_xy.r_max, n_points)
@@ -626,11 +684,11 @@ fig_mode_kernels.tight_layout()
 plt.show()
 
 best_mode = min(cv_mode, key=lambda k: cv_mode[k].mean_error)
-best_mode_rollout = min(rollout_mode, key=lambda k: rollout_ensemble_score(rollout_mode[k]))
+best_mode_rollout = min(rollout_mode, key=lambda k: rollout_path_score(rollout_mode[k]))
 print(f"\nBest estimator mode by 1-step CV: {best_mode}  (CV MSE = {cv_mode[best_mode].mean_error:.4e})")
 print(
-    f"Best estimator mode by ensemble MSE: {best_mode_rollout}"
-    f"  (ens MSE = {rollout_ensemble_score(rollout_mode[best_mode_rollout]):.4e})"
+    f"Best estimator mode by path MSE (primary): {best_mode_rollout}"
+    f"  (path MSE = {rollout_path_score(rollout_mode[best_mode_rollout]):.4e})"
 )
 
 # %% [markdown]
@@ -668,6 +726,8 @@ for frac in ENDPOINT_FRACS:
 
     cfg = FitConfig(
         topology=BASE_CONFIG.topology,
+        envelope_r0_xx=BASE_CONFIG.envelope_r0_xx,
+        envelope_w_xx=BASE_CONFIG.envelope_w_xx,
         n_basis_xx=BASE_CONFIG.n_basis_xx,
         n_basis_xy=BASE_CONFIG.n_basis_xy,
         r_min_xx=BASE_CONFIG.r_min_xx,
@@ -697,9 +757,8 @@ for frac in ENDPOINT_FRACS:
     )
     rollout_endpoint[label] = run_rollout_cv(trimmed_method, cfg)
     print(
-        f"    ensemble MSE = {rollout_ensemble_score(rollout_endpoint[label]):.4e}"
-        f" ± {rollout_ensemble_se(rollout_endpoint[label]):.4e}"
-        f"  path MSE = {rollout_path_score(rollout_endpoint[label]):.4e}"
+        f"    path MSE = {rollout_path_score(rollout_endpoint[label]):.4e}"
+        f"  ens MSE @h={H_PRIMARY} = {rollout_ensemble_score(rollout_endpoint[label]):.4e}"
         f"  W1 total = {rollout_w1_score(rollout_endpoint[label]):.4e}",
         flush=True,
     )
@@ -716,6 +775,8 @@ n_cells_endpoint["end_sep"] = len(trimmed_end_sep)
 if len(trimmed_end_sep) >= 3:
     cfg_es = FitConfig(
         topology=BASE_CONFIG.topology,
+        envelope_r0_xx=BASE_CONFIG.envelope_r0_xx,
+        envelope_w_xx=BASE_CONFIG.envelope_w_xx,
         n_basis_xx=BASE_CONFIG.n_basis_xx,
         n_basis_xy=BASE_CONFIG.n_basis_xy,
         r_min_xx=BASE_CONFIG.r_min_xx,
@@ -744,9 +805,8 @@ if len(trimmed_end_sep) >= 3:
     )
     rollout_endpoint["end_sep"] = run_rollout_cv(trimmed_end_sep, cfg_es)
     print(
-        f"    ensemble MSE = {rollout_ensemble_score(rollout_endpoint['end_sep']):.4e}"
-        f" ± {rollout_ensemble_se(rollout_endpoint['end_sep']):.4e}"
-        f"  path MSE = {rollout_path_score(rollout_endpoint['end_sep']):.4e}"
+        f"    path MSE = {rollout_path_score(rollout_endpoint['end_sep']):.4e}"
+        f"  ens MSE @h={H_PRIMARY} = {rollout_ensemble_score(rollout_endpoint['end_sep']):.4e}"
         f"  W1 total = {rollout_w1_score(rollout_endpoint['end_sep']):.4e}",
         flush=True,
     )
@@ -760,8 +820,8 @@ if cv_endpoint:
     plt.show()
 
     endpoint_labels = list(cv_endpoint.keys())
-    endpoint_rollout_means = [rollout_ensemble_score(rollout_endpoint[k]) for k in endpoint_labels]
-    endpoint_rollout_stds = [rollout_ensemble_se(rollout_endpoint[k]) for k in endpoint_labels]
+    endpoint_rollout_means = [rollout_path_score(rollout_endpoint[k]) for k in endpoint_labels]
+    endpoint_rollout_stds = [rollout_path_se(rollout_endpoint[k]) for k in endpoint_labels]
     fig_ep_rollout, ax_ep_rollout = plt.subplots(figsize=(8, 4))
     ax_ep_rollout.bar(
         np.arange(len(endpoint_labels)),
@@ -772,21 +832,21 @@ if cv_endpoint:
     )
     ax_ep_rollout.set_xticks(np.arange(len(endpoint_labels)))
     ax_ep_rollout.set_xticklabels(endpoint_labels, rotation=30, ha="right")
-    ax_ep_rollout.set_ylabel("Leave-one-out ensemble MSE")
+    ax_ep_rollout.set_ylabel("Leave-one-out path MSE (primary)")
     ax_ep_rollout.set_title(
-        "Sweep 3 — Endpoint ensemble MSE comparison  (deterministic drift rollout)"
+        "Sweep 3 — Endpoint path MSE comparison  (deterministic drift rollout)"
     )
     fig_ep_rollout.tight_layout()
     plt.show()
 
     best_endpoint = min(cv_endpoint, key=lambda k: cv_endpoint[k].mean_error)
     best_endpoint_rollout = min(
-        rollout_endpoint, key=lambda k: rollout_ensemble_score(rollout_endpoint[k])
+        rollout_endpoint, key=lambda k: rollout_path_score(rollout_endpoint[k])
     )
     print(f"\nBest endpoint by 1-step CV: {best_endpoint}  (CV MSE = {cv_endpoint[best_endpoint].mean_error:.4e})")
     print(
-        f"Best endpoint by ensemble MSE: {best_endpoint_rollout}"
-        f"  (ens MSE = {rollout_ensemble_score(rollout_endpoint[best_endpoint_rollout]):.4e})"
+        f"Best endpoint by path MSE (primary): {best_endpoint_rollout}"
+        f"  (path MSE = {rollout_path_score(rollout_endpoint[best_endpoint_rollout]):.4e})"
     )
 else:
     print("No endpoint settings produced enough cells for CV.")
@@ -800,20 +860,20 @@ for label in list(f"frac={f:.2f}" for f in ENDPOINT_FRACS) + ["end_sep"]:
 #
 # Headline question: what hyperparameters are reasonable for the kernel fit?
 # We use the same primary criterion as NB04 (deterministic drift-rollout
-# ensemble MSE at horizon `H_PRIMARY`) so the answers are directly aligned.
+# path MSE -- full-trajectory ensemble MSE) so the answers are directly aligned.
 
 # %%
 print("=" * 70)
-print(f"Hyperparameter sensitivity summary  (primary metric: ens MSE @h={H_PRIMARY})")
+print("Hyperparameter sensitivity summary  (primary metric: path MSE)")
 print("=" * 70)
-best_grid_score = rollout_ensemble_score(grid_rollout[best_key])
+best_grid_score = rollout_path_score(grid_rollout[best_key])
 print(f"  {'Joint grid n_basis':<30} {best_n_basis_rollout:<14} {best_grid_score:.4e}")
 print(f"  {'Joint grid lambda_rough':<30} {best_rough_rollout:<14.2e} {best_grid_score:.4e}")
 print(f"  {'basis_eval_mode':<30} {best_mode_rollout:<14} "
-      f"{rollout_ensemble_score(rollout_mode[best_mode_rollout]):.4e}")
+      f"{rollout_path_score(rollout_mode[best_mode_rollout]):.4e}")
 if cv_endpoint:
     print(f"  {'endpoint_method':<30} {best_endpoint_rollout:<14} "
-          f"{rollout_ensemble_score(rollout_endpoint[best_endpoint_rollout]):.4e}")
+          f"{rollout_path_score(rollout_endpoint[best_endpoint_rollout]):.4e}")
 print("=" * 70)
 print(f"  lambda_ridge fixed at {LAMBDA_RIDGE:.0e} throughout (numerical jitter only;")
 print("  not interpreting individual basis coefficients, only kernel function output).")
