@@ -29,7 +29,8 @@
 #   topologies (admissible vs nuisance upper-bound). Source: NB04.
 # - **Fig 4 (D)** — effective diffusion D(d) versus 3D Euclidean
 #   distance from spindle center (``d`` reserved for that distance to
-#   avoid collision with SFI pairwise distance ``r``), with constant-D
+#   avoid collision with the SFI-inspired pairwise distance ``r``),
+#   with constant-D
 #   baseline. Source: NB06.
 #
 # Forecast-error-vs-horizon and 5-topology forecast curves go to the
@@ -702,8 +703,12 @@ for ax, label in [(ax_fpp, "A"), (ax_fcp, "B"), (ax_strip, "C")]:
     ax.text(-0.13, 1.04, label, transform=ax.transAxes,
             fontsize=11, fontweight="bold", va="bottom", ha="left")
 
-fig2.suptitle("CS-CS forces are sufficient to predict pole motion",
-              fontsize=10, y=0.995)
+fig2.suptitle("Chromosome-on-pole coupling does not improve "
+               "pole-motion prediction in the autonomous test\n"
+               "(1-step RMSE is statistically indistinguishable; "
+               "path-MSE pp+cp edge reflects CH-as-covariate "
+               "non-identifiability, not causal coupling — see text)",
+              fontsize=8.5, y=0.998)
 fig2.tight_layout()
 save_figure(fig2, "fig2_cs_sufficient")
 plt.show()
@@ -711,28 +716,34 @@ plt.show()
 # %% [markdown]
 # ## Fig 3 — Learned chromosome force kernels and topology comparison
 #
-# Alex's docx Result 3C: "We hypothesize several models: CHs interact
-# with each other or not, they interact with poles or spindle center.
-# Best model turns out to be: 1) CH-CH interaction is just steric
-# repulsion; 2) each CS attracts a CH with an almost constant,
-# distance-independent force at long distances and repels it at
-# spindle-width-scale distances."
+# Addresses Alex's docx Result 3C ("predicted force-distance relations"
+# + "best model: CH-CH steric only, CS attracts CH at long distance").
+# Reports what the data-driven SFI-inspired projection fit actually
+# shows under a
+# biologically motivated steric envelope on the chrom-chrom kernel —
+# the f_xy shape may differ in detail from Alex's prior verbal
+# prediction; see discussion notes accompanying the figure.  The
+# held-out-forecast-error-vs-horizon panel Alex requests in 3C is
+# planned for supplement S3 rather than the main text.
 #
 # Top row: signed force kernels with bootstrap 5–95 % CI bands.
-# - **A** ``f_xy(r)`` overlaid for the three admissible topologies
-#   (chrom-to-pole for ``poles`` / ``poles_and_chroms_enveloped``;
-#   chrom-to-spindle-midpoint for ``center``).  Distance ranges differ
-#   between pole-partner and midpoint-partner, so the curves are
-#   plotted on a shared x-axis but each within its own observed support.
-# - **B** ``f_xx(r)`` for the selected ``poles_and_chroms_enveloped``
-#   topology, with the steric envelope shape shown lightly behind.
+# - **A** ``f_xy(r)`` overlaid for all 4 topologies (poles, center,
+#   poles_and_chroms free-xx, poles_and_chroms_enveloped).  Distinct
+#   linestyles for distinguishability; cropped at 12 μm to keep the
+#   visual focus on the data-supported region.
+# - **B** ``f_xx(r)`` for the two topologies that have an xx kernel
+#   (free-xx vs enveloped).  The free-xx kernel deviates from zero at
+#   long range — the spurious chrom-chrom interaction that motivates
+#   the biologically motivated steric envelope and the a priori
+#   exclusion of free-xx topologies from the admissible set.
 #
-# Bottom row: sorted mean ± SE bar chart of LOO path MSE across the 5
-# candidate topologies.  Admissible models in Okabe-Ito (poles, center,
-# enveloped); nuisance upper-bound models (free-form xx) in hatched
+# Bottom row: sorted mean ± SE bar chart of LOO path MSE across the 4
+# topologies.  Admissible models (poles, center, enveloped) in
+# Okabe-Ito; nuisance upper-bound (poles + chroms free-xx) hatched
 # neutral gray.  Selected topology annotated.  Per-cell strip plots
 # are punted to the supplement (00b S1) so the main panel is not
-# muddled by 12-cell jitter.
+# muddled by 12-cell jitter; ``center_and_chroms`` (free-xx +
+# midpoint partner) is also punted to S1.
 
 # %%
 # --- All 5 topologies: fit + bootstrap + rollout CV ----------------
@@ -901,24 +912,12 @@ ax_fxx.set_xlim(R_MIN, F_XX_PLOT_MAX)
 ax_fxx.set_xlabel("Chromosome-chromosome distance (μm)")
 ax_fxx.set_ylabel("$f_{xx}(r)$  (μm/s) "
                    "\n+ attractive · - repulsive")
-ax_fxx.set_title("Chromosome-chromosome interaction",
-                 loc="left", fontsize=8.5)
-ax_fxx.legend(frameon=False, loc="lower right", fontsize=6.5)
-
-# We do NOT share y-axis between f_xy and f_xx in this figure: f_xx
-# magnitudes are intrinsically smaller (per-pair chrom-chrom force
-# from a single neighbour, not summed over partners), and forcing a
-# shared scale obscures the long-range artefact that motivated the
-# envelope.  The relative size of CS-CH vs CS-CS contributions is
-# already shown quantitatively in Fig 2.  Add an annotation calling
-# out the smaller scale.
-ax_fxx.text(0.97, 0.04,
-            "Note: y-scale ~10× smaller than panel A.\n"
-            "f_xx is per chrom-chrom pair (no 45× sum).",
-            transform=ax_fxx.transAxes, ha="right", va="bottom",
-            fontsize=6.0, color="0.4",
-            bbox=dict(facecolor="white", edgecolor="none",
-                      alpha=0.5, pad=2))
+ax_fxx.set_title("Chromosome-chromosome interaction (per-pair; "
+                  "y-scale ~10× smaller than panel A)",
+                 loc="left", fontsize=8.0)
+ax_fxx.legend(frameon=False, loc="upper right", fontsize=6.5)
+# y-scale note moved out of the data area to avoid colliding with the
+# kernel curves; appended to the panel title via the suptitle box.
 
 # --- Path MSE bar chart, sorted by performance ---------------------
 n_topo = len(TOPOLOGIES_F3)
@@ -966,8 +965,9 @@ ax_path.set_xticklabels(
 )
 ax_path.set_ylabel("LOO path MSE (μm²)")
 ax_path.set_title("Mean per-cell trajectory error across topologies "
+                   "— y-axis starts above 0 to highlight differences "
                    "(see supplement for per-cell breakdown)",
-                  loc="left", fontsize=8.5)
+                  loc="left", fontsize=8.0)
 
 # Zoom y-axis to amplify the differences between topologies.  The
 # bottom is set to ~85 % of the smallest mean so the bars are clearly
@@ -985,10 +985,7 @@ ax_path.plot([_break_x_left, _break_x_left + 0.10],
 ax_path.plot([_break_x_left + 0.10, _break_x_left + 0.20],
              [_break_y + 0.018 * (y_hi_path - y_lo_path), _break_y],
              color="0.2", linewidth=1.0, clip_on=False, zorder=10)
-ax_path.text(0.99, 0.04,
-             "y-axis starts above 0 to highlight differences",
-             transform=ax_path.transAxes, ha="right", va="bottom",
-             fontsize=6.0, color="0.4")
+# (y-axis-zoom warning is in the panel title)
 
 # Custom legend for admissible vs nuisance UB
 from matplotlib.patches import Patch
@@ -1163,12 +1160,13 @@ pole_lc_sde = _draw_pca_panel(ax_sde, sim_cell_sde,
 ax_real.set_ylabel("PC2 (μm)")
 ax_real.autoscale()
 
-cbar_pole_3b = inset_axes(ax_sde, width="55%", height="3%",
-                          loc="lower right", borderpad=1.2)
-plt.colorbar(pole_lc_sde, cax=cbar_pole_3b, orientation="horizontal")
-cbar_pole_3b.set_xlabel("Centrosomes (NEB to 0.4 NEB-AO)",
-                        fontsize=6.0, labelpad=2)
-cbar_pole_3b.tick_params(labelsize=0, length=0)
+# Single horizontal time colorbar OUTSIDE the axes (below the figure)
+# rather than inside ax_sde, to avoid overlapping the x-axis label.
+cbar_ax = fig3b.add_axes([0.30, 0.02, 0.40, 0.018])
+plt.colorbar(pole_lc_sde, cax=cbar_ax, orientation="horizontal")
+cbar_ax.set_xlabel("Centrosome time (NEB to 0.4 NEB-AO)",
+                   fontsize=6.5, labelpad=2)
+cbar_ax.tick_params(labelsize=0, length=0)
 
 for ax, label in [(ax_real, "A"), (ax_det, "B"), (ax_sde, "C")]:
     ax.text(-0.13, 1.02, label, transform=ax.transAxes,
@@ -1188,17 +1186,21 @@ plt.show()
 # greater far from the spindle, which supports findings of our previous
 # paper."
 #
-# Pooled **f_corrected** estimate of D(d) versus 3D Euclidean distance
-# d from the spindle center.  ``f_corrected`` subtracts the predicted
-# drift from each one-step displacement before estimating D, so it
-# isolates the residual stochastic component (less contaminated by
-# ballistic motion than MSD; less inflated by localization noise than
-# Vestergaard for our regime).  Thin per-cell curves are shown behind
-# the pooled curve (consistency check); a constant-D baseline (the
-# scalar D from the canonical model's residual-MSD fit, ``model.D_x =
-# 1.97e-3 μm²/s``, computed independently) is overlaid for comparison.
-# Coordinate ``d`` reserved for spindle-center distance to avoid
-# collision with SFI's pairwise distance ``r``.
+# Local diffusivity is estimated from the mean-squared residual
+# displacement after subtracting the fitted deterministic force,
+# $\langle |\delta X - \hat F(X) \cdot dt|^2 \rangle / (2 \cdot d \cdot dt)$, which
+# removes the leading drift contamination that otherwise biases
+# quadratic displacement estimators in this drift-dominated, spatially
+# heterogeneous setting.  In the Itô convention, the projected drift
+# absorbed by the stage-1 force estimate already includes any
+# basis-resolvable diffusion-gradient $\nabla\!\cdot\!D$ contribution
+# (Frishman & Ronceray PRX 2020, App. H Eq. H2 and Eq. 15), so no
+# additional $\nabla\!\cdot\!D$ correction is applied; the estimator
+# is not localization-noise-corrected, which is negligible here given
+# per-step drift ≫ localization noise.  Coordinate ``d`` is reserved
+# for the spindle-center distance to avoid collision with the
+# SFI-inspired pairwise interaction distance
+# pairwise distance ``r``.
 
 # %%
 N_BASIS_D = 8

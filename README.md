@@ -18,7 +18,7 @@ The core method treats chromosome motion as overdamped Langevin dynamics driven 
   - `ipynb/` — Auto-generated `.ipynb` files for GitHub rendering (may be out of date; regenerate with `bash scripts/execute_notebooks.sh`)
   - **Paper-figure assemblers** (primary interface for paper output):
     - `00_main_figure.py` — Main-text figure assembler. Renders four standalone figures into `figures/main/` (PDF + 600 dpi PNG): Fig 1 (PCA + lag), Fig 2 (CS-CS sufficient with 1-step RMSE + path-MSE caveat), Fig 3 (force kernels + sorted topology path-MSE bars), Fig 3b (in-sample sim-vs-real PCA validation), Fig 4 (D(d) f_corrected estimator). Per-cell strip plots punted to supplement.
-    - `00b_supplement.py` — Supplement figure assembler. Skeleton; planned panels S1-S5 land here as the main text stabilises (per-cell topology breakdown, per-cell CS-prediction breakdown, forecast vs horizon 1-30, hyperparameter sensitivity, per-cell kernel variability).
+    - `00b_supplement.py` — Supplement figure assembler. Skeleton; planned panels S1-S7 each support a specific main-text figure: S1 (per-cell pp/pp+cp breakdown for Fig 2), S2 (NB03b partition non-identifiability for Fig 2), S3 (per-cell 5-topology breakdown for Fig 3), S4 (forecast vs horizon 1-30 for Fig 3 + Alex's h=10 anchor), S5 (hyperparameter sensitivity from NB05 for Fig 3), S6 (per-cell kernel variability from NB07 for Fig 3), S7 (D-estimator robustness for Fig 4).
   - **Internal / technical notebooks** (the analysis pipeline these assemblers consume):
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
   - `02_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time

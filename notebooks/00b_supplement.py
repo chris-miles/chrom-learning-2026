@@ -27,27 +27,42 @@
 #   is justified in CLAUDE.md / methods text rather than as its own
 #   figure. We can add it back if reviewers ask.
 #
-# Surviving panels:
-# - **S1** — 5-topology per-cell breakdown (LOO path MSE).  The per-cell
-#   strip plot is in the supplement rather than the main text because
-#   the bulk pattern is best summarised by the sorted mean ± SE bars
-#   in main-text Fig 3; reviewers who want fold-level granularity can
-#   look here.  Admissibility annotation as in Fig 3.
-# - **S2** — pp-only vs pp+cp per-cell breakdown for the centrosome-
-#   prediction analysis (companion to main-text Fig 2).  Same logic:
-#   the headline mean ± SE bars are in Fig 2, and the per-cell strip
-#   plot lives here for fold-level inspection.  Includes both 1-step
-#   RMSE and rollout path MSE.
-# - **S3** — held-out forecast error vs horizon (1–30 frames) for all 5
-#   topologies. Directly addresses Alex's docx ask
+# Surviving panels — each maps to a robustness story for one of the
+# main-text figures:
+#
+# Companions to **Fig 2** (CS-CS sufficient):
+# - **S1** — pp-only vs pp+cp per-cell strip plot for both metrics
+#   (1-step RMSE and rollout path MSE).  The headline mean ± SE bars
+#   are in Fig 2; the per-cell breakdown lives here for fold-level
+#   inspection.
+# - **S2** — pp/cp partition non-identifiability (NB03b
+#   reconciliation).  Demonstrates that the apparent path-MSE pp+cp
+#   edge in Fig 2 is consistent with the analytical partition
+#   non-identifiability when chromosomes are observed covariates.
+#
+# Companions to **Fig 3** (kernels + topology comparison):
+# - **S3** — 5-topology per-cell breakdown (LOO path MSE) including
+#   ``center_and_chroms`` (free-xx + midpoint partner; dropped from
+#   Fig 3 main text).  Admissibility annotation as in Fig 3.
+# - **S4** — held-out forecast error vs horizon (1–30 frames) for all
+#   5 topologies.  Directly addresses Alex's docx ask
 #   (*"held-out forecast error vs horizon for up to 10 frames"*),
 #   extended to 30 frames for the tail.  Admissible solid, nuisance
 #   upper-bound dashed.
-# - **S4** — hyperparameter sensitivity (NB05): ``(n_basis × λ_rough)``
-#   path-MSE heatmap; estimator-mode bars (Itô / Itô-shift / Stratonovich);
-#   endpoint-method bars (``frac`` sweep + ``end_sep``).
-# - **S5** — per-cell kernel variability (NB07): spaghetti of per-cell
-#   ``f_xy`` overlaid on pooled bootstrap CI band.
+# - **S5** — hyperparameter sensitivity (from NB05): ``(n_basis ×
+#   λ_rough)`` path-MSE heatmap; estimator-mode bars (Itô / Itô-shift
+#   / Stratonovich); endpoint-method bars (``frac`` sweep +
+#   ``end_sep``).
+# - **S6** — per-cell kernel variability (from NB07): spaghetti of
+#   per-cell ``f_xy`` overlaid on pooled bootstrap CI band.
+#
+# Companion to **Fig 4** (D(d)):
+# - **S7** — D-estimator robustness: pooled D(d) curves from
+#   ``f_corrected`` (main-text headline), ``vestergaard``, ``msd``,
+#   and ``weak_noise`` overlaid on the same axes.  Confirms the
+#   "D grows away from spindle" pattern is robust to estimator
+#   choice; the absolute magnitudes differ (drift-contamination of
+#   Vestergaard, etc.) but the qualitative trend agrees.
 
 # %%
 import sys
@@ -158,74 +173,114 @@ cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO) for c in cel
 print(f"Loaded {len(cells)} {CONDITION} cells.")
 
 # %% [markdown]
-# ## Fig S1 — 5-topology per-cell breakdown (LOO path MSE)
+# ## Fig S1 — pp-only vs pp+cp per-cell breakdown (companion to Fig 2)
 #
-# Companion to main-text Fig 3, which only shows the topology mean ±
-# SE.  This panel exposes the per-cell distribution: each cell is a
-# row, with one paired strip across the 5 topologies.  Light connecting
-# lines highlight fold-by-fold consistency (or lack thereof).
-# Admissible models (poles, center, ``poles_and_chroms_enveloped``) in
-# Okabe-Ito categorical colors; nuisance upper-bound models
-# (``poles_and_chroms``, ``center_and_chroms`` with free-form xx) in
-# neutral gray.
-#
-# **TODO.** Run ``rollout_cross_validate`` for each of the 5
-# topologies on the same trimmed cells (or load NB04's saved results
-# if cached), then render the strip plot.  Cells that blow up on
-# isolated topologies (typically ``center_and_chroms``) are flagged as
-# annotated outliers rather than clipping the y-axis.
-
-# %%
-# TODO: Fig S1 implementation
-
-# %% [markdown]
-# ## Fig S2 — pp-only vs pp+cp per-cell breakdown
-#
-# Companion to main-text Fig 2.  Per-cell paired strip plots for both
-# metrics (1-step RMSE and rollout path MSE), with light connecting
-# lines showing within-cell paired changes.  Mean ± SE diamonds.
+# Per-cell paired strip plots for both metrics that anchor main-text
+# Fig 2: 1-step LOO RMSE and deterministic-rollout LOO path MSE.
+# Light connecting lines show within-cell paired changes.  Mean ± SE
+# diamonds.
 #
 # **TODO.** Build pole-velocity design matrices, run LOO over the 12
 # cells (or load cached results), and render the two strip plots
 # side-by-side.
 
 # %%
+# TODO: Fig S1 implementation
+
+# %% [markdown]
+# ## Fig S2 — pp/cp partition non-identifiability (companion to Fig 2)
+#
+# Source: NB03b.  Demonstrates analytically and empirically that the
+# apparent path-MSE pp+cp edge in Fig 2 is consistent with the
+# partition non-identifiability when chromosomes are observed as
+# covariates: a continuous family of (f_pp, f_cp) pairs gives nearly
+# identical predictions, so the slight pp+cp gain is fitting
+# CH-correlated noise rather than capturing a real causal coupling.
+#
+# **TODO.** Reuse NB03b's force-partition reconciliation analysis;
+# render a 2-panel figure (analytical degeneracy + empirical
+# coefficient swap).
+
+# %%
 # TODO: Fig S2 implementation
 
 # %% [markdown]
-# ## Fig S3 — Forecast error vs horizon (1–30 frames)
+# ## Fig S3 — 5-topology per-cell breakdown (companion to Fig 3)
 #
-# **TODO.** Ensemble MSE vs horizon for all 5 topologies, horizons
-# 1 → 30 frames.  Admissible solid, nuisance upper-bound dashed.
-# Vertical annotation at h = 10 marking Alex's docx anchor.  Pulled
-# from NB04's ``forecast_horizon_cross_validate`` output (or recomputed
-# via ``evaluate_all_loocv``).
+# Companion to main-text Fig 3, which shows only the topology
+# mean ± SE bars and drops ``center_and_chroms`` to keep the panel
+# focused.  This panel exposes the per-cell distribution across all
+# 5 topologies (poles, center, poles_and_chroms_enveloped,
+# poles_and_chroms, center_and_chroms).  Light connecting lines
+# highlight fold-by-fold consistency.
+#
+# **TODO.** Run ``rollout_cross_validate`` for each of the 5
+# topologies on the same trimmed cells (or load NB04's saved results
+# if cached), then render the strip plot.  Cells that blow up on
+# isolated topologies (typically ``center_and_chroms``) are flagged
+# as annotated outliers rather than clipping the y-axis.
 
 # %%
 # TODO: Fig S3 implementation
 
 # %% [markdown]
-# ## Fig S4 — Hyperparameter sensitivity (NB05)
+# ## Fig S4 — Forecast error vs horizon, 1–30 frames (companion to Fig 3)
 #
-# **TODO.** Three sub-panels in one figure:
+# Directly addresses Alex's docx Result 3C ask
+# (*"held-out forecast error vs horizon for up to 10 frames"*),
+# extended to 30 frames for the tail.  Ensemble MSE vs horizon for
+# all 5 topologies; admissible solid, nuisance upper-bound dashed.
+# Vertical annotation at h = 10 marks Alex's anchor.
 #
-# - Heatmap of path MSE over the ``(n_basis, lambda_rough)`` grid for
-#   the canonical ``poles_and_chroms_enveloped`` topology, with the
+# **TODO.** Pull from NB04's ``forecast_horizon_cross_validate``
+# output (or recompute via ``evaluate_all_loocv``).
+
+# %%
+# TODO: Fig S4 implementation
+
+# %% [markdown]
+# ## Fig S5 — Hyperparameter sensitivity (companion to Fig 3)
+#
+# Source: NB05.  Three sub-panels in one figure:
+#
+# - Heatmap of path MSE over the ``(n_basis, λ_rough)`` grid for the
+#   canonical ``poles_and_chroms_enveloped`` topology, with the
 #   selected operating point marked.
-# - Bars of path MSE for estimator modes (Itô / Itô-shift / Stratonovich).
-# - Bars of path MSE for endpoint methods (``frac`` sweep + ``end_sep``).
-#
-# Pulled from NB05.
-
-# %%
-# TODO: Fig S3 implementation
-
-# %% [markdown]
-# ## Fig S5 — Per-cell kernel variability
-#
-# **TODO.** Spaghetti of per-cell ``f_xy`` fits overlaid on pooled
-# bootstrap 5–95 % CI band. Quantifies cell-to-cell variability vs
-# pooled-fit uncertainty. Pulled from NB07.
+# - Bars of path MSE for estimator modes (Itô / Itô-shift /
+#   Stratonovich).
+# - Bars of path MSE for endpoint methods (``frac`` sweep +
+#   ``end_sep``).
 
 # %%
 # TODO: Fig S5 implementation
+
+# %% [markdown]
+# ## Fig S6 — Per-cell kernel variability (companion to Fig 3)
+#
+# Source: NB07.  Spaghetti of per-cell ``f_xy`` fits overlaid on the
+# pooled bootstrap 5–95 % CI band.  Quantifies cell-to-cell
+# variability vs pooled-fit uncertainty.
+
+# %%
+# TODO: Fig S6 implementation
+
+# %% [markdown]
+# ## Fig S7 — D-estimator robustness (companion to Fig 4)
+#
+# Pooled D(d) curves from all four estimators (``f_corrected``,
+# ``vestergaard``, ``msd``, ``weak_noise``) overlaid on a single axis.
+# The main-text Fig 4 reports ``f_corrected`` because it explicitly
+# subtracts the fitted drift before estimating residual variance,
+# which matters in this drift-dominated, spatially heterogeneous
+# regime (Frishman & Ronceray PRX 2020, App. H).  This supplement
+# panel confirms the qualitative "D grows away from spindle center"
+# pattern is robust to estimator choice; the absolute magnitudes
+# differ by a factor of ~2-3× across estimators (Vestergaard sits
+# systematically high due to drift contamination, ``f_corrected``
+# overlaps the scalar-D baseline).
+#
+# **TODO.** Run ``estimate_diffusion_variable`` with all four modes,
+# overlay on one panel, annotate which estimator each curve uses.
+
+# %%
+# TODO: Fig S7 implementation
