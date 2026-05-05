@@ -50,6 +50,11 @@ This project uses SFI-inspired projection inference, not the full SFI/PASTIS pip
 ## Active vs archived notebooks
 
 Active notebooks (paper-relevant; primary interface):
+Paper-figure assemblers (skeleton; in progress):
+- `00_main_figure.py` -- main-text Fig 3 assembler (panels A: PCA, B: lag, C: kernels, D: D(x)). Loads canonical envelope model and bootstrap; panel implementations TODO.
+- `00b_supplement.py` -- supplement assembler (topology comparison, horizon forecast, hyperparameter robustness, per-cell variability, data-density / extrapolation shading, envelope methodology). Panels TODO.
+
+Internal / technical notebooks (paper-relevant; primary interface for the underlying analysis):
 - `01_explore_data.py` -- data loading, trajectory inspection
 - `02_velocity_spatial_not_temporal.py` -- velocity-distance relation
 - `02b_explore_chrom_pole_asymm.py`, `02c_chrom_pole_projection_test.py` -- pole/chromosome asymmetry diagnostics

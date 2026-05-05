@@ -16,6 +16,10 @@ The core method treats chromosome motion as overdamped Langevin dynamics driven 
   - `analysis/` — Supporting analyses (lag correlation, trajectory visualization, velocity-vs-distance, PCA trajectory projection)
 - `notebooks/` — Jupytext percent-format `.py` notebooks (source of truth for all edits)
   - `ipynb/` — Auto-generated `.ipynb` files for GitHub rendering (may be out of date; regenerate with `bash scripts/execute_notebooks.sh`)
+  - **Paper-figure assemblers** (skeleton; in progress):
+    - `00_main_figure.py` — Main-text Fig 3 assembler. Loads canonical envelope model + bootstrap; panels A (PCA), B (lag correlation), C (force-distance kernels), D (D(x)) are TODOs
+    - `00b_supplement.py` — Supplement assembler: topology comparison, horizon forecast, hyperparameter robustness, per-cell variability, data-density / extrapolation shading, envelope methodology. Panels are TODOs
+  - **Internal / technical notebooks** (the analysis pipeline these assemblers consume):
   - `01_explore_data.py` — Data loading, visualization, trajectory inspection
   - `02_velocity_spatial_not_temporal.py` — Velocity depends on distance, not time
   - `02b_explore_chrom_pole_asymm.py`, `02c_chrom_pole_projection_test.py` — Pole/chromosome asymmetry diagnostics
