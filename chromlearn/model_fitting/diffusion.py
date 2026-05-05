@@ -87,6 +87,77 @@ COORDINATE_MAPS: dict[str, Callable[[np.ndarray, TrimmedCell], np.ndarray]] = {
 # ---------------------------------------------------------------------------
 
 
+def _predicted_forces_all_t(
+    cell: TrimmedCell,
+    fit_result,
+    basis_xx,
+    basis_xy,
+    topology: str = "poles",
+    r_cutoff_xx: float | None = None,
+) -> np.ndarray:
+    """Predicted force vectors for every chromosome at every t in [0, T-2].
+
+    Vectorized counterpart of :func:`_predicted_force`.  Builds the full
+    pairwise (T-1, N, N) distance tensors, masks out invalid pairs, and
+    issues a single batched basis evaluation per kernel.
+
+    Returns:
+        ``(T - 1, N, 3)`` array.  Entries are NaN where the focal
+        chromosome position is missing.
+    """
+    chromosomes = cell.chromosomes              # (T, 3, N)
+    n_xx = basis_xx.n_basis if basis_xx is not None else 0
+    theta = fit_result.theta
+
+    X = np.moveaxis(chromosomes[:-1], 1, 2)     # (Tm1, N, 3)
+    Tm1, N, _ = X.shape
+    valid_x = np.all(np.isfinite(X), axis=2)    # (Tm1, N)
+    forces = np.zeros((Tm1, N, 3), dtype=np.float64)
+
+    if basis_xx is not None and n_xx > 0:
+        delta_xx = X[:, np.newaxis, :, :] - X[:, :, np.newaxis, :]   # (Tm1, N, N, 3); j - i
+        dist_xx = np.linalg.norm(delta_xx, axis=-1)                  # (Tm1, N, N)
+        mask_xx = (
+            valid_x[:, :, np.newaxis]
+            & valid_x[:, np.newaxis, :]
+            & ~np.eye(N, dtype=bool)[np.newaxis]
+            & (dist_xx > 1e-12)
+        )
+        if r_cutoff_xx is not None:
+            mask_xx &= dist_xx <= r_cutoff_xx
+        kvals_xx = np.zeros_like(dist_xx)
+        if mask_xx.any():
+            kvals_xx[mask_xx] = basis_xx.evaluate(dist_xx[mask_xx]) @ theta[:n_xx]
+        direction_xx = np.zeros_like(delta_xx)
+        # delta_xx is x_j - x_i; direction (j - i)/|j - i|.  Force on i
+        # from j is f_xx(d) * direction (using SFI convention where f_xx
+        # > 0 means attractive toward j).
+        nz = dist_xx > 1e-12
+        direction_xx[nz] = delta_xx[nz] / dist_xx[nz, np.newaxis]
+        forces += np.sum(direction_xx * kvals_xx[..., np.newaxis], axis=2)
+
+    partners = get_partners(cell, topology)         # (n_partners, T, 3)
+    P = np.transpose(partners[:, :Tm1, :], (1, 0, 2))  # (Tm1, n_partners, 3)
+    valid_p = np.all(np.isfinite(P), axis=2)        # (Tm1, n_partners)
+    delta_xy = P[:, np.newaxis, :, :] - X[:, :, np.newaxis, :]   # (Tm1, N, n_partners, 3)
+    dist_xy = np.linalg.norm(delta_xy, axis=-1)                  # (Tm1, N, n_partners)
+    mask_xy = (
+        valid_x[:, :, np.newaxis]
+        & valid_p[:, np.newaxis, :]
+        & (dist_xy > 1e-12)
+    )
+    kvals_xy = np.zeros_like(dist_xy)
+    if mask_xy.any():
+        kvals_xy[mask_xy] = basis_xy.evaluate(dist_xy[mask_xy]) @ theta[n_xx:]
+    direction_xy = np.zeros_like(delta_xy)
+    nz_xy = dist_xy > 1e-12
+    direction_xy[nz_xy] = delta_xy[nz_xy] / dist_xy[nz_xy, np.newaxis]
+    forces += np.sum(direction_xy * kvals_xy[..., np.newaxis], axis=2)
+
+    forces = np.where(valid_x[..., np.newaxis], forces, np.nan)
+    return forces
+
+
 def _predicted_force(
     cell: TrimmedCell,
     time_index: int,
@@ -253,10 +324,15 @@ def local_diffusion_estimates(
 
         elif mode == "f_corrected":
             # D[t,i] = |dX[t] - F_pred[t]*dt|^2 / (2*d*dt)
+            # Vectorized force prediction across all timesteps in one batch.
             dX_all = np.diff(chromosomes, axis=0)  # (T-1, 3, N)
+            forces_all = _predicted_forces_all_t(
+                cell, fit_result, basis_xx, basis_xy,
+                topology=topology, r_cutoff_xx=r_cutoff_xx,
+            )  # (T-1, N, 3)
             D = np.full((T - 1, N), np.nan, dtype=np.float64)
             for t in range(T - 1):
-                forces = _predicted_force(cell, t, fit_result, basis_xx, basis_xy, topology=topology, r_cutoff_xx=r_cutoff_xx)
+                forces = forces_all[t]  # (N, 3)
                 # forces: (N, 3), dX_all[t]: (3, N)
                 residual = dX_all[t] - (forces.T * dt)  # (3, N)
                 D[t] = np.sum(residual ** 2, axis=0) / (2.0 * d * dt)

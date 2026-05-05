@@ -50,9 +50,9 @@ This project uses SFI-inspired projection inference, not the full SFI/PASTIS pip
 ## Active vs archived notebooks
 
 Active notebooks (paper-relevant; primary interface):
-Paper-figure assemblers (skeleton; in progress):
-- `00_main_figure.py` -- main-text Fig 3 assembler (panels A: PCA, B: lag, C: kernels, D: D(x)). Loads canonical envelope model and bootstrap; panel implementations TODO.
-- `00b_supplement.py` -- supplement assembler (topology comparison, horizon forecast, hyperparameter robustness, per-cell variability, data-density / extrapolation shading, envelope methodology). Panels TODO.
+Paper-figure assemblers (primary interface for paper output):
+- `00_main_figure.py` -- main-text figure assembler. Renders four standalone figures into `figures/main/` (PDF + 600 dpi PNG): Fig 1 (PCA + lag, NB03 source), Fig 2 (CS-CS sufficient: dual-metric — 1-step RMSE bars + path-MSE summary with non-identifiability caveat, NB03 Part B source), Fig 3 (force kernels + sorted topology mean path-MSE bars, NB04 source), Fig 3b (in-sample sim-vs-real PCA validation), Fig 4 (D(d) f_corrected estimator vs 3D Euclidean distance from spindle center, NB06 source). Per-cell strip plots are deliberately moved to the supplement. All kernel panels share y-axes within a figure and carry explicit "+ attractive · - repulsive" sign labels.
+- `00b_supplement.py` -- supplement figure assembler. Skeleton; panel implementations land here as the main text stabilises. Planned panels: S1 (per-cell 5-topology path-MSE strip plot, companion to Fig 3), S2 (per-cell pp-only vs pp+cp strip plot, companion to Fig 2), S3 (forecast error vs horizon 1-30 frames, companion to Fig 3 and Alex's docx anchor at h=10), S4 (NB05 hyperparameter heatmap + estimator/endpoint bars), S5 (NB07 per-cell kernel variability).
 
 Internal / technical notebooks (paper-relevant; primary interface for the underlying analysis):
 - `01_explore_data.py` -- data loading, trajectory inspection
