@@ -49,7 +49,9 @@ plt.rcParams["figure.dpi"] = 110
 # %%
 CONDITION = "rpe18_ctr"          # Control-condition cells used for the diffusion analysis.
 FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
-TOPOLOGY = "poles"               # Drift model carried over from the main selection notebook.
+TOPOLOGY = "poles_and_chroms"    # Base FitConfig topology; short-range variant is encoded by the envelope (matches NB04's poles_and_chroms_enveloped winner).
+ENVELOPE_R0_XX = 1.5             # Center of the smooth steric envelope on the xx kernel (um); matches NB04.
+ENVELOPE_W_XX = 0.3              # Transition width of the envelope (um); matches NB04.
 N_BASIS_XX = 10                  # Number of spline basis functions for chromosome-chromosome kernels.
 N_BASIS_XY = 10                  # Number of spline basis functions for pole-chromosome kernels.
 R_MIN = 0.3                      # Lower basis cutoff in microns.
@@ -65,9 +67,13 @@ cells_raw = load_condition(CONDITION)
 cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO_WINDOW) for c in cells_raw]
 print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_AO_WINDOW:.3f})")
 
-# Use the same config as NB04 (poles topology, 10 basis functions, 1e-3 reg)
+# Same fit config as NB04's poles_and_chroms_enveloped winner: base topology
+# poles_and_chroms with smooth steric envelope (r0=1.5 um, w=0.3 um), 10 basis
+# functions, 1e-6 ridge jitter.
 config = FitConfig(
     topology=TOPOLOGY,
+    envelope_r0_xx=ENVELOPE_R0_XX,
+    envelope_w_xx=ENVELOPE_W_XX,
     n_basis_xx=N_BASIS_XX,
     n_basis_xy=N_BASIS_XY,
     r_min_xx=R_MIN,
@@ -134,7 +140,6 @@ D_COORD = "distance"
 N_BASIS_D = 8
 R_MIN_D = 0.5
 R_MAX_D = 12.0
-LAMBDA_D = 1e-2
 
 basis_D = BSplineBasis(R_MIN_D, R_MAX_D, N_BASIS_D)
 
@@ -168,7 +173,7 @@ for est in ESTIMATORS:
         coord_name=D_COORD,
         dt=config.dt,
         mode=est,
-        lambda_ridge=LAMBDA_D,
+        lambda_ridge=LAMBDA_RIDGE,
         topology=model.topology,
         **kwargs,
     )
@@ -235,7 +240,6 @@ for cell in cells:
             basis_xx=model.basis_xx,
             basis_xy=model.basis_xy,
             topology=model.topology,
-            r_cutoff_xx=model.r_cutoff_xx,
         )
         Fmag = np.linalg.norm(F, axis=1)  # (N,)
         valid = np.isfinite(Fmag) & np.isfinite(coord_arr[t])
@@ -333,7 +337,7 @@ for cell in cells:
         coord_name=D_COORD,
         dt=config.dt,
         mode=PERCELL_EST,
-        lambda_ridge=LAMBDA_D,
+        lambda_ridge=LAMBDA_RIDGE,
         topology=model.topology,
     )
     D_curve = dr.evaluate(eval_coords)
@@ -384,7 +388,7 @@ for idx, coord in enumerate(coord_names):
         coord_name=coord,
         dt=config.dt,
         mode="vestergaard",
-        lambda_ridge=LAMBDA_D,
+        lambda_ridge=LAMBDA_RIDGE,
         topology=model.topology,
     )
     x = np.linspace(rlo, rhi, 200)
@@ -453,7 +457,7 @@ for row, cell_idx in enumerate(ROLLOUT_CELLS):
 
 axes[-1, 0].set_xlabel("Time (s)")
 axes[-1, 1].set_xlabel("Time (s)")
-fig.suptitle("Rollout validation: real vs simulated (scalar D, poles model)")
+fig.suptitle("Rollout validation: real vs simulated (scalar D, short-range poles+chroms model)")
 fig.tight_layout()
 plt.show()
 

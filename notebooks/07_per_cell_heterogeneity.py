@@ -45,7 +45,9 @@ plt.rcParams["figure.dpi"] = 110
 # %%
 CONDITION = "rpe18_ctr"          # Control-condition cells used for the heterogeneity analysis.
 FRAC_NEB_AO_WINDOW = 0.4         # Baseline trajectory window as a fraction of NEB-to-AO.
-TOPOLOGY = "poles"               # Drift model carried over from the main selection notebook.
+TOPOLOGY = "poles_and_chroms"    # Base FitConfig topology; short-range variant is encoded by the envelope (matches NB04's poles_and_chroms_enveloped winner).
+ENVELOPE_R0_XX = 1.5             # Center of the smooth steric envelope on the xx kernel (um); matches NB04.
+ENVELOPE_W_XX = 0.3              # Transition width of the envelope (um); matches NB04.
 N_BASIS_XX = 10                  # Number of spline basis functions for chromosome-chromosome kernels.
 N_BASIS_XY = 10                  # Number of spline basis functions for pole-chromosome kernels.
 R_MIN = 0.3                      # Lower basis cutoff in microns.
@@ -66,6 +68,8 @@ print(f"Loaded {len(cells)} {CONDITION} cells (trimmed to neb_ao_frac={FRAC_NEB_
 
 config = FitConfig(
     topology=TOPOLOGY,
+    envelope_r0_xx=ENVELOPE_R0_XX,
+    envelope_w_xx=ENVELOPE_W_XX,
     n_basis_xx=N_BASIS_XX,
     n_basis_xy=N_BASIS_XY,
     r_min_xx=R_MIN,
@@ -149,7 +153,7 @@ for i, m in enumerate(percell_models):
 ax.axhline(0, color="0.7", linestyle="--", linewidth=0.5)
 ax.set_xlabel("Distance to pole (um)")
 ax.set_ylabel("f_xy (force)")
-ax.set_title("Per-cell f_xy kernels vs pooled fit (poles topology)")
+ax.set_title("Per-cell f_xy kernels vs pooled fit (short-range poles+chroms topology)")
 ax.legend()
 fig.tight_layout()
 plt.show()

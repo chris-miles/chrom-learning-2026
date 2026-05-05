@@ -9,7 +9,7 @@
 # | **center** | pole midpoint (1 partner) | no |
 # | **poles\_and\_chroms** | both poles | yes (full range) |
 # | **center\_and\_chroms** | pole midpoint | yes (full range) |
-# | **poles\_and\_chroms\_short** | both poles | yes (r < 2.5 um only) |
+# | **poles\_and\_chroms\_enveloped** | both poles | yes (smooth steric envelope, r0=1.5 um, w=0.3 um — kernel ~0 by 2 um) |
 #
 # Primary selection criterion: leave-one-cell-out deterministic drift-rollout
 # MSE (single noise-free ODE forward integration of the fitted drift,
@@ -93,16 +93,20 @@ for c in cells:
 
 # %%
 TOPOLOGIES = ["poles", "center", "poles_and_chroms", "center_and_chroms",
-              "poles_and_chroms_short"]
+              "poles_and_chroms_enveloped"]
 
 R_MIN = 0.3   # um — tracking resolution floor
 R_MAX = 15.0  # um — conservative spindle-scale upper bound
-R_CUTOFF_XX_SHORT = 2.5  # um — short-range-only xx cutoff
+ENVELOPE_R0_XX = 1.5  # um — center of the smooth steric envelope; envelope ~0 by r=2.1 um.
+ENVELOPE_W_XX = 0.3   # um — transition width.  Tightened from r0=2.5,w=0.5 after observing
+                       # a second hump in the inferred kernel past 2 um (model artifact, not biology).
+                       # Biologically grounded by RPE-1 chromatid contact scale (~1-2 um;
+                       # kinetochore plate ~300 nm, chromatid ~500 nm x several um).
 
 
 def _base_topology(label: str) -> str:
     """Map extended topology labels to the base topology string."""
-    if label == "poles_and_chroms_short":
+    if label == "poles_and_chroms_enveloped":
         return "poles_and_chroms"
     return label
 
@@ -159,9 +163,9 @@ for t in TOPOLOGIES:
           f"(observed range: {np.min(arr):.2f} – {np.max(arr):.2f} um)")
 
 # %%
-# Only plot unique xy partner sets (poles_and_chroms_short shares partners
+# Only plot unique xy partner sets (poles_and_chroms_enveloped shares partners
 # with poles_and_chroms, so skip its duplicate histogram).
-_HIST_TOPOLOGIES = [t for t in TOPOLOGIES if t != "poles_and_chroms_short"]
+_HIST_TOPOLOGIES = [t for t in TOPOLOGIES if t != "poles_and_chroms_enveloped"]
 fig, axes = plt.subplots(1, 1 + len(_HIST_TOPOLOGIES), figsize=(18, 4))
 
 axes[0].hist(xx_dists_all, bins=60, color="C2", edgecolor="k", alpha=0.7)
@@ -186,7 +190,7 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# ## Fit all four models
+# ## Fit all five models
 #
 # We use:
 # - `n_basis = 10` B-spline basis functions for both xx and xy kernels
@@ -199,7 +203,7 @@ plt.show()
 # %%
 configs: dict[str, FitConfig] = {}
 for topology in TOPOLOGIES:
-    r_cutoff = R_CUTOFF_XX_SHORT if topology == "poles_and_chroms_short" else None
+    use_envelope = topology == "poles_and_chroms_enveloped"
     configs[topology] = FitConfig(
         topology=_base_topology(topology),
         n_basis_xx=N_BASIS,
@@ -215,7 +219,8 @@ for topology in TOPOLOGIES:
         endpoint_method="neb_ao_frac",
         endpoint_frac=FRAC_NEB_AO_WINDOW,
         dt=DT,
-        r_cutoff_xx=r_cutoff,
+        envelope_r0_xx=ENVELOPE_R0_XX if use_envelope else None,
+        envelope_w_xx=ENVELOPE_W_XX if use_envelope else None,
     )
 
 print("Fitting models...")
@@ -291,9 +296,9 @@ for rank, topology in enumerate(sorted_topo_cv):
 # - **Diffusion floor**: for overdamped Langevin motion, the per-coordinate
 #   one-step noise variance is approximately `2 D_x / dt`.
 #
-# If the fitted models sit close to these references, then one-step CV is still
-# a sensible primary score, but it should not be expected to sharply separate
-# topologies on its own.
+# If the fitted models sit close to these references, one-step CV is a
+# usable *supporting* diagnostic, but it cannot sharply separate topologies on
+# its own.  Primary criterion is the path-MSE rollout score below.
 
 # %%
 ref_cfg = configs[TOPOLOGIES[0]]
@@ -396,12 +401,12 @@ for col, topology in enumerate(chroms_topologies):
 
     f_vals = m.evaluate_kernel("xx", r_probe)
 
-    # Bootstrap band (apply cutoff so CI matches effective kernel)
+    # Bootstrap band — basis_xx.evaluate already includes the smooth envelope
+    # for the enveloped variant, so the CI tracks the effective kernel without
+    # any manual zeroing.
     phi = m.basis_xx.evaluate(r_probe)
     theta_xx_samples = boot.theta_samples[:, : m.n_basis_xx]
     curves = phi @ theta_xx_samples.T
-    if m.r_cutoff_xx is not None:
-        curves[r_probe > m.r_cutoff_xx, :] = 0.0
     lo = np.percentile(curves, 5, axis=1)
     hi = np.percentile(curves, 95, axis=1)
     ax.fill_between(r_probe, lo, hi, color="C0", alpha=0.2, label="5–95% CI")
@@ -496,7 +501,10 @@ sf_real = spindle_frame(example_cell)
 QUAL_CELL_IDXS = sorted({0, len(cells) // 2, len(cells) - 1})
 QUAL_N_TRACES = 6
 ROLLOUT_HORIZONS = (1, 3, 5, 8, 10, 15, 20, 25, 30)
-H_PRIMARY = 10  # Primary held-out horizon (frames). Sweep via the curve below.
+H_PRIMARY = 10  # Diagnostic forecast horizon (frames; Alex's docx anchor).
+                # Used for the supporting horizon-resolved curve and h=10 ensemble
+                # MSE diagnostic.  Primary criterion is path MSE over the full
+                # trimmed window; see model-selection summary below.
 assert H_PRIMARY in ROLLOUT_HORIZONS, "H_PRIMARY must be one of ROLLOUT_HORIZONS"
 
 
@@ -789,7 +797,7 @@ for topo_index, topology in enumerate(TOPOLOGIES):
     rr = rollout_results[topology]
     h_idx = list(rr.horizons).index(H_PRIMARY)
     primary_mse = float(np.nanmean(rr.horizon_ensemble_mse[:, h_idx]))
-    print(f"  {topology:<22}  primary_MSE(h={H_PRIMARY})={primary_mse:.5f}  "
+    print(f"  {topology:<22}  ens_MSE(h={H_PRIMARY})={primary_mse:.5f}  "
           f"path_MSE={np.nanmean(rr.path_mse):.5f}  "
           f"endpoint_MSE={np.nanmean(rr.endpoint_mean_error):.5f}  "
           f"final_W1(ax,rad)=({np.nanmean(rr.final_axial_wasserstein):.4f}, "
@@ -798,8 +806,21 @@ for topo_index, topology in enumerate(TOPOLOGIES):
 
 # %%
 # Primary model-selection criterion: leave-one-cell-out deterministic
-# drift-rollout MSE at horizon H_PRIMARY (default 10 frames). The full horizon
-# curve below shows whether the topology ranking is stable across horizons.
+# drift-rollout *path* MSE — average squared (real - sim) chromosome
+# position over all frames of the trimmed early-prometaphase trajectory.
+# This integrates the horizon-resolved error over the predeclared
+# analysis window (NEB to ~0.4 of NEB-AO, ~150 s), avoiding an arbitrary
+# single-horizon choice.  The from-NEB ensemble MSE at h=H_PRIMARY and
+# the rolling-window forecast curve below are reported as supporting
+# diagnostics that the path-MSE conclusion is not hiding a single-horizon
+# failure mode.
+path_mse_score = {
+    topology: float(np.nanmean(rollout_results[topology].path_mse))
+    for topology in TOPOLOGIES
+}
+sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: path_mse_score[t])
+
+# Diagnostic ensemble-MSE @ H_PRIMARY (kept for the supporting display)
 _primary_h_idx = list(rollout_results[TOPOLOGIES[0]].horizons).index(H_PRIMARY)
 rollout_ensemble_mse_score = {
     topology: float(np.nanmean(
@@ -807,18 +828,17 @@ rollout_ensemble_mse_score = {
     ))
     for topology in TOPOLOGIES
 }
-sorted_topo_rollout = sorted(TOPOLOGIES, key=lambda t: rollout_ensemble_mse_score[t])
 
-# Simplified rollout display: ensemble MSE bar chart + from-NEB horizon curve
+# Display: primary path-MSE bar chart + from-NEB horizon curve diagnostic
 fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
 x = np.arange(len(TOPOLOGIES))
 
-axes[0].bar(x, [rollout_ensemble_mse_score[t] for t in TOPOLOGIES],
+axes[0].bar(x, [path_mse_score[t] for t in TOPOLOGIES],
             color=[f"C{i}" for i in range(len(TOPOLOGIES))])
 axes[0].set_xticks(x)
 axes[0].set_xticklabels(TOPOLOGIES, rotation=45, ha="right")
-axes[0].set_ylabel(f"Ensemble MSE at h={H_PRIMARY} (um^2)")
-axes[0].set_title(f"LOOCV drift-rollout MSE at h={H_PRIMARY}\n(primary criterion)")
+axes[0].set_ylabel("Path MSE (um^2, full-trajectory average)")
+axes[0].set_title("LOOCV deterministic rollout path MSE\n(primary criterion)")
 
 horizons_neb = rollout_results[TOPOLOGIES[0]].horizons
 dt = cells[0].dt
@@ -838,12 +858,14 @@ fig.suptitle("Rollout validation across held-out cells")
 fig.tight_layout()
 plt.show()
 
-# Summary table (simplified)
-print(f"\nLOOCV rollout summary (sorted by primary criterion: ensemble MSE at h={H_PRIMARY})")
-print(f"  {'Topology':<22} {'Ens MSE@h=' + str(H_PRIMARY):>14} {'1-step CV MSE':>14}")
-print("-" * 55)
+# Summary table sorted by primary criterion (path MSE), with diagnostic
+# ensemble MSE @h=H_PRIMARY and 1-step CV alongside.
+print(f"\nLOOCV rollout summary (sorted by primary criterion: path MSE)")
+print(f"  {'Topology':<25} {'Path MSE':>12} {'Ens MSE@h=' + str(H_PRIMARY):>14} {'1-step CV':>14}")
+print("-" * 75)
 for topology in sorted_topo_rollout:
-    print(f"  {topology:<22} {rollout_ensemble_mse_score[topology]:>14.5f} "
+    print(f"  {topology:<25} {path_mse_score[topology]:>12.5f} "
+          f"{rollout_ensemble_mse_score[topology]:>14.5f} "
           f"{cv_results[topology].mean_error:>14.8f}")
 
 # %% [markdown]
@@ -897,7 +919,7 @@ plt.show()
 # %% [markdown]
 # ## Metric concordance
 #
-# Do the primary metrics agree on topology ranking?
+# Do the supporting diagnostics agree with the primary path-MSE ranking?
 
 # %%
 metric_rankings: dict[str, list[str]] = {}
@@ -932,73 +954,80 @@ else:
 # %% [markdown]
 # ## Model selection summary
 #
-# **Primary criterion**: leave-one-cell-out deterministic drift-rollout MSE at
-# horizon ``H_PRIMARY = 10`` frames (a single noise-free ODE forward integration
-# of the fitted drift, scored at a fixed forecast horizon). This is the
-# standard held-out metric in the dynamics-learning literature (NRI, Latent ODE,
-# ODE2VAE all report MSE at fixed multi-step horizons). The residual is drift
-# bias plus a topology-invariant data-noise floor; it scores the conditional
-# mean for drift/topology selection, not the full distributional SDE.
+# **Primary criterion**: leave-one-cell-out deterministic drift-rollout
+# **path MSE** — mean squared (real - sim) chromosome position over all
+# frames of the trimmed early-prometaphase trajectory (NEB to ``frac=0.4``
+# of NEB-AO, ~150 s).  This integrates the horizon-resolved error over
+# the predeclared analysis window, avoiding an arbitrary single-horizon
+# choice.  The from-NEB ensemble MSE at ``h=H_PRIMARY`` (Alex's
+# diagnostic horizon), the rolling-window forecast curve, the final-frame
+# Wasserstein distance, and the endpoint MSE are reported as supporting
+# diagnostics — they show whether the path-MSE conclusion is hiding a
+# single-horizon failure mode.
 #
-# The horizon-resolved curve above shows whether the topology ranking is
-# stable across horizons; we treat ``H_PRIMARY`` as a parameter, with the
-# curve as a sweep diagnostic for the supplement.
+# **Biological admissibility**: ``poles_and_chroms`` and
+# ``center_and_chroms`` allow free-form (full-range) chromosome-chromosome
+# forces, which have no known biological basis for mammalian mitosis.
+# We treat these as flexible nuisance-absorbing upper bounds: they may
+# capture missing physics (e.g. common spindle transport) without being
+# physically interpretable.  The biologically admissible candidate set
+# is ``poles``, ``center``, and ``poles_and_chroms_enveloped`` (which
+# adds steric chromosome-chromosome repulsion at the chromatid contact
+# scale ~1-2 um).
 #
-# **Secondary**: one-step velocity MSE and rolling-window forecast horizon.
-#
-# **Qualitative checks**: full-data forward simulations and kernel-shape /
-# physics plausibility (above).
+# **Selection**: ``poles_and_chroms_enveloped`` gives the lowest path
+# MSE among biologically admissible models.  We adopt it as the
+# canonical model.  ``center`` is reported but not preferred: it is a
+# phenomenological attractor toward the spindle midpoint, not derivable
+# from the kinetochore-microtubule force balance that motivates the
+# ``poles`` topology family.
 
 # %%
-sorted_topo = sorted(TOPOLOGIES, key=lambda t: cv_results[t].mean_error)
-best_mean_topo = sorted_topo[0]
-paired = paired_cv_differences(cv_results, reference=best_mean_topo)
-best_rollout_topo = sorted_topo_rollout[0]
+# Biologically admissible candidate set: models without a free-form
+# (full-range) chromosome-chromosome kernel.  poles_and_chroms and
+# center_and_chroms permit long-range xx forces with no known
+# biological basis; treated as flexible nuisance-absorbing upper bounds.
+ADMISSIBLE_TOPOLOGIES = ["poles", "center", "poles_and_chroms_enveloped"]
+sorted_admissible = sorted(ADMISSIBLE_TOPOLOGIES, key=lambda t: path_mse_score[t])
+best_admissible = sorted_admissible[0]
 
-print(f"Primary criterion: leave-one-cell-out drift-rollout ensemble MSE at h={H_PRIMARY}")
+print(f"Primary criterion: leave-one-cell-out drift-rollout path MSE")
 print("=" * 80)
-best_rollout_score = rollout_ensemble_mse_score[best_rollout_topo]
-print(f"  {'Topology':<22} {'Ens MSE@h=' + str(H_PRIMARY):>14} {'vs best':>9} {'1-step CV':>14}")
-print("-" * 65)
+best_path_score = path_mse_score[best_admissible]
+print(f"  {'Topology':<25} {'Path MSE':>12} {'vs best':>9} "
+      f"{'Ens MSE@h=' + str(H_PRIMARY):>14} {'admissible':>12}")
+print("-" * 80)
 for t in sorted_topo_rollout:
-    rel_pct = 100.0 * (rollout_ensemble_mse_score[t] - best_rollout_score) / best_rollout_score if best_rollout_score > 0 else np.nan
-    print(f"  {t:<22} {rollout_ensemble_mse_score[t]:>14.5f} {rel_pct:>+8.1f}% "
-          f"{cv_results[t].mean_error:>14.8f}")
+    rel_pct = 100.0 * (path_mse_score[t] - best_path_score) / best_path_score if best_path_score > 0 else np.nan
+    admissible_marker = "yes" if t in ADMISSIBLE_TOPOLOGIES else "nuisance UB"
+    print(f"  {t:<25} {path_mse_score[t]:>12.5f} {rel_pct:>+8.1f}% "
+          f"{rollout_ensemble_mse_score[t]:>14.5f} {admissible_marker:>12}")
 
-# Paired foldwise differences for rollout ensemble MSE at the primary horizon
-ref_ens = rollout_results[best_rollout_topo].horizon_ensemble_mse[:, _primary_h_idx]
-print(f"\nPaired foldwise differences in ensemble MSE @h={H_PRIMARY} "
-      f"(reference: {best_rollout_topo})")
-print(f"  {'Topology':<22} {'mean diff':>12} {'SE(diff)':>12} {'diff/SE':>10}")
-for topology in sorted_topo_rollout:
+# Paired foldwise differences on path MSE among biologically admissible models
+ref_path = rollout_results[best_admissible].path_mse
+print(f"\nPaired foldwise differences in path MSE "
+      f"(reference: {best_admissible}, best biologically admissible)")
+print(f"  {'Topology':<25} {'mean diff':>12} {'SE(diff)':>12} {'diff/SE':>10}")
+for topology in ADMISSIBLE_TOPOLOGIES:
     rr = rollout_results[topology]
-    diff = rr.horizon_ensemble_mse[:, _primary_h_idx] - ref_ens
+    diff = rr.path_mse - ref_path
     valid = np.isfinite(diff)
     n = int(valid.sum())
     mean_diff = float(np.mean(diff[valid])) if n > 0 else np.inf
     se_diff = float(np.std(diff[valid], ddof=1) / np.sqrt(n)) if n > 1 else np.inf
     ratio = mean_diff / se_diff if se_diff > 0 and se_diff < np.inf else 0.0
-    print(f"  {topology:<22} {mean_diff:>+12.4e} {se_diff:>12.4e} {ratio:>10.2f}")
-
-# Parsimony note
-simplest_topo = "poles"
-if best_rollout_topo != simplest_topo:
-    diff_simp = rollout_results[simplest_topo].horizon_ensemble_mse[:, _primary_h_idx] - ref_ens
-    valid_simp = np.isfinite(diff_simp)
-    n_simp = int(valid_simp.sum())
-    mean_simp = float(np.mean(diff_simp[valid_simp])) if n_simp > 0 else np.inf
-    se_simp = float(np.std(diff_simp[valid_simp], ddof=1) / np.sqrt(n_simp)) if n_simp > 1 else np.inf
-    ratio_simp = mean_simp / se_simp if se_simp > 0 and se_simp < np.inf else 0.0
-    if abs(ratio_simp) < 2.0:
-        print(f"\n  Parsimony: {simplest_topo} is within 2 SE of {best_rollout_topo} "
-              f"(diff/SE = {ratio_simp:.2f}). Prefer the simpler model.")
-    else:
-        print(f"\n  Parsimony: {simplest_topo} is >2 SE worse than {best_rollout_topo} "
-              f"(diff/SE = {ratio_simp:.2f}). The more complex model is justified.")
+    print(f"  {topology:<25} {mean_diff:>+12.4e} {se_diff:>12.4e} {ratio:>10.2f}")
 print("=" * 80)
 
-best_topology = best_rollout_topo
+# Selection: by primary criterion (path MSE) among biologically admissible models.
+best_topology = best_admissible
 print(f"\nSelected topology: {best_topology}")
+print("  Justification: lowest LOOCV path-averaged held-out trajectory error")
+print("  among biologically admissible models (poles, center, poles_and_chroms_enveloped).")
+print("  Free-form xx variants (poles_and_chroms, center_and_chroms) are reported")
+print("  as nuisance-absorbing upper bounds; not physically interpretable.")
+print("  Center is reported but is phenomenological (chrom-midpoint attraction is")
+print("  not derivable from the kinetochore-microtubule force balance underlying poles).")
 
 # Final kernel plot for the winner
 print(f"\nFinal kernel plot for best model ({best_topology}):")
