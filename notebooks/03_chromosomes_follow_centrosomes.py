@@ -159,9 +159,10 @@ print(f"Peak correlation value: {lag_result.median[peak_idx]:.3f}")
 # %%
 from chromlearn.model_fitting.basis import BSplineBasis
 
-# Match the main fitter's light ridge + stronger roughness prior so the
-# kernel shape reflects smooth spindle dynamics rather than basis jitter.
-LAMBDA_RIDGE = 1e-3
+# Match NB04's penalties: ridge is numerical jitter only (we don't
+# interpret individual coefficients); kernel shape comes from the
+# integrated 2nd-derivative roughness prior.
+LAMBDA_RIDGE = 1e-6
 LAMBDA_ROUGH = 1.0
 
 
@@ -882,22 +883,29 @@ plt.show()
 #
 # ## Part C — Back-of-the-envelope physics argument
 #
-# Even without data, we can estimate an upper bound on the force that the
-# chromosome cloud could exert on the spindle.
+# Even without data, we can estimate an upper bound on the net force that
+# the chromosome cloud exerts on the spindle and compare it to the
+# dominant interpolar-MT (ipMT) forces that drive spindle elongation.
 #
-# - Each kinetochore-microtubule attachment generates $\sim$1 pN of force.
+# - Each kinetochore-microtubule attachment generates $\sim$1 pN of force
+#   (e.g., polar ejection force $\sim$1 pN, Marshall 2001).
 # - With $\sim$46 chromosomes distributed roughly symmetrically around the
 #   spindle, the net (vectorial) force largely cancels.  Even assuming a
 #   generous 10% asymmetry, the net chromosome-on-spindle force is
 #   $\sim$46 $\times$ 1 pN $\times$ 0.1 $\approx$ 5 pN.
-# - The spindle's effective drag coefficient is of order $\sim$100 pN s/um
-#   (e.g., Garzon-Coral et al. 2016).
-# - The resulting velocity perturbation is $\sim$5 pN / 100 pN s/um
-#   $= 0.05$ um/s — far below the $\sim$0.5-1 um/s pole-separation speeds
-#   observed during prometaphase.
+# - The dominant ipMT-mediated forces driving early-prometaphase spindle
+#   elongation are of order $\sim$10$^2$ pN (Civelekoglu-Scholey 2010 and
+#   Wenzheng's force-balance estimate in Result 2 of the main draft:
+#   thousands of motors $\times$ pN-scale per motor, balanced by the
+#   measured $\sim$0.025 um/s elongation rate against effective ipMT drag
+#   of order $\sim$10$^4$ pN s/um).
+# - The chromosome contribution is therefore $\sim$5/200 $\approx$ 2.5%
+#   of the ipMT-scale forces — comparable to or smaller than the
+#   uncertainties on the dominant terms.
 #
-# This confirms that even under generous assumptions, chromosome forces
-# cannot appreciably steer the spindle.
+# This is consistent with the data-driven conclusion in Parts A-B: even
+# under generous assumptions, chromosome forces cannot appreciably
+# perturb the spindle elongation dynamics that ipMT motors set.
 #
 # ## Conclusion
 #

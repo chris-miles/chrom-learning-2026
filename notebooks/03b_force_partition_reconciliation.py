@@ -112,7 +112,7 @@ MIN_FRAMES = 25
 R_MIN = 0.3
 R_MAX = 15.0
 N_BASIS = 6
-LAMBDA_RIDGE = 1e-3
+LAMBDA_RIDGE = 1e-6
 LAMBDA_ROUGH = 1.0
 
 COND_CTRL = "rpe18_ctr"
@@ -866,10 +866,14 @@ print(f"  median |dr/dt|   = {np.median(np.abs(sep_rates)):.5f} um/s")
 print(f"  95th pct dr/dt   = {np.percentile(sep_rates, 95):.5f} um/s")
 
 # %% [markdown]
-# These rates are useful context for any back-of-the-envelope physics
-# argument. In particular, they are much smaller than the `0.5-1 um/s`
-# scale quoted in notebook `03` Part C, so I would want to audit that unit
-# comparison carefully before using it as a decisive quantitative bound.
+# These rates are useful context for the back-of-the-envelope physics
+# argument in `03` Part C.  They are consistent with the measured spindle
+# elongation rate of $\sim$0.025 um/s reported in Alex's draft (Result 2),
+# which we now use in NB03 Part C in place of the earlier mis-quoted
+# 0.5-1 um/s.  The corrected NB03 framing compares the net chromosome
+# force ($\sim$5 pN) to the dominant ipMT forces ($\sim$10$^2$ pN), not
+# to the spindle's own velocity, matching Wenzheng's force-balance
+# argument in Result 2.
 
 # %%
 cv_3d = loocv_3d(cell_pole_rows)
