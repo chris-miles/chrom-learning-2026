@@ -220,9 +220,14 @@ def bootstrap_kernels(
     if not cells:
         raise ValueError("bootstrap_kernels requires at least one cell.")
 
+    from chromlearn.model_fitting.basis import make_basis_with_envelope
+
     BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
     if _topology_has_chroms(config.topology):
-        basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+        basis_xx = make_basis_with_envelope(
+            BasisClass, config.r_min_xx, config.r_max_xx, config.n_basis_xx,
+            envelope_r0=config.envelope_r0_xx, envelope_w=config.envelope_w_xx,
+        )
     else:
         basis_xx = None
     basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
@@ -280,9 +285,14 @@ def cross_validate(
             raise ValueError("k_folds must be >= 2 (or None for LOO).")
         folds = [group.tolist() for group in np.array_split(range(n_cells), k_folds)]
 
+    from chromlearn.model_fitting.basis import make_basis_with_envelope
+
     BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
     if _topology_has_chroms(config.topology):
-        basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+        basis_xx = make_basis_with_envelope(
+            BasisClass, config.r_min_xx, config.r_max_xx, config.n_basis_xx,
+            envelope_r0=config.envelope_r0_xx, envelope_w=config.envelope_w_xx,
+        )
     else:
         basis_xx = None
     basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
@@ -724,6 +734,211 @@ def forecast_horizon_cross_validate(
     )
 
 
+def evaluate_all_loocv(
+    cells: list[TrimmedCell],
+    config: FitConfig,
+    rollout_horizons: tuple[int, ...] = (1, 5, 10, 20),
+    forecast_horizons: tuple[int, ...] = (1, 3, 5, 10, 20),
+    compute_one_step: bool = True,
+) -> tuple["CVResult | None", RolloutCVResult, "ForecastHorizonResult"]:
+    """Single-pass LOOCV across 1-step CV, from-NEB rollout, and rolling-window
+    forecast metrics.
+
+    Fits the model ONCE per held-out cell (instead of three times across the
+    three separate CV functions), then evaluates all three metrics against
+    the same FittedModel.  Numerically equivalent to calling::
+
+        cross_validate(cells, config)
+        rollout_cross_validate(cells, config, horizons=rollout_horizons,
+                               deterministic=True)
+        forecast_horizon_cross_validate(cells, config, horizons=forecast_horizons,
+                                        deterministic=True)
+
+    independently.  Speedup ~3x on the fitting cost; lower wall-clock when
+    rollout/forecast simulation dominates.  Deterministic mode only.
+
+    Args:
+        cells: Trimmed cell trajectories (LOOCV; one held-out cell per fold).
+        config: Fitting configuration.
+        rollout_horizons: Horizons (frames) for from-NEB rollout metrics.
+        forecast_horizons: Horizons (frames) for rolling-window forecast.
+        compute_one_step: If False, skip the 1-step CV residual block (returns
+            None for the CVResult slot).
+
+    Returns:
+        Tuple ``(CVResult | None, RolloutCVResult, ForecastHorizonResult)``.
+    """
+    from chromlearn.io.trajectory import spindle_frame
+    from chromlearn.model_fitting.basis import (
+        BSplineBasis, HatBasis, make_basis_with_envelope,
+    )
+    from chromlearn.model_fitting.features import build_design_matrix
+    from chromlearn.model_fitting.simulate import simulate_cell
+
+    if not cells:
+        raise ValueError("evaluate_all_loocv requires at least one cell.")
+    n_cells = len(cells)
+
+    rollout_horizon_values = np.array(
+        sorted({int(h) for h in rollout_horizons if int(h) > 0}), dtype=int)
+    forecast_horizon_values = np.array(
+        sorted({int(h) for h in forecast_horizons if int(h) > 0}), dtype=int)
+    if rollout_horizon_values.size == 0:
+        raise ValueError("rollout_horizons must contain at least one positive integer.")
+    if forecast_horizon_values.size == 0:
+        raise ValueError("forecast_horizons must contain at least one positive integer.")
+
+    # Build basis ONCE (shared across folds for the 1-step CV test design matrix)
+    BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
+    if _topology_has_chroms(config.topology):
+        basis_xx = make_basis_with_envelope(
+            BasisClass, config.r_min_xx, config.r_max_xx, config.n_basis_xx,
+            envelope_r0=config.envelope_r0_xx, envelope_w=config.envelope_w_xx,
+        )
+    else:
+        basis_xx = None
+    basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)
+
+    # 1-step CV outputs
+    cv_errors = np.full(n_cells, np.nan, dtype=np.float64)
+
+    # Rollout outputs (per-cell)
+    path_mse = np.full(n_cells, np.nan, dtype=np.float64)
+    ensemble_mse_arr = np.full(n_cells, np.nan, dtype=np.float64)
+    axial_mse = np.full(n_cells, np.nan, dtype=np.float64)
+    radial_mse = np.full(n_cells, np.nan, dtype=np.float64)
+    endpoint_mean_error = np.full(n_cells, np.nan, dtype=np.float64)
+    final_axial_w = np.full(n_cells, np.nan, dtype=np.float64)
+    final_radial_w = np.full(n_cells, np.nan, dtype=np.float64)
+    horizon_errors = np.full((n_cells, rollout_horizon_values.size), np.nan, dtype=np.float64)
+    horizon_path_mse = np.full((n_cells, rollout_horizon_values.size), np.nan, dtype=np.float64)
+    horizon_ensemble_mse = np.full((n_cells, rollout_horizon_values.size), np.nan, dtype=np.float64)
+
+    # Forecast outputs (per-cell, per-horizon)
+    fc_ens_mse = np.full((n_cells, forecast_horizon_values.size), np.nan, dtype=np.float64)
+    fc_path_mse = np.full((n_cells, forecast_horizon_values.size), np.nan, dtype=np.float64)
+
+    for held_out_index in range(n_cells):
+        train_cells = [c for j, c in enumerate(cells) if j != held_out_index]
+        # SINGLE fit per fold — the dedup win.
+        model = fit_model(train_cells, config)
+        test_cell = cells[held_out_index]
+
+        # ---- 1. one-step CV residual (matches cross_validate)
+        if compute_one_step:
+            G_test, V_test = build_design_matrix(
+                [test_cell], basis_xx, basis_xy,
+                basis_eval_mode=config.basis_eval_mode,
+                topology=config.topology,
+                r_cutoff_xx=config.r_cutoff_xx,
+            )
+            if G_test.size > 0:
+                predictions = G_test @ model.theta
+                cv_errors[held_out_index] = float(np.mean((V_test - predictions) ** 2))
+
+        # ---- 2. From-NEB deterministic rollout (matches rollout_cross_validate, deterministic=True)
+        _, sim_cell = simulate_cell(test_cell, model, rng=None, deterministic=True)
+        sim_sf = spindle_frame(sim_cell)
+        sim_chrom = sim_cell.chromosomes
+        sim_axial = sim_sf.axial
+        sim_radial = sim_sf.radial
+
+        real_sf = spindle_frame(test_cell)
+        real_axial_mean = np.nanmean(real_sf.axial, axis=1)
+        real_radial_mean = np.nanmean(real_sf.radial, axis=1)
+        real_chroms = test_cell.chromosomes
+
+        # path MSE = ensemble MSE in deterministic mode (single rep)
+        diff_3d = real_chroms - sim_chrom
+        any_nan = np.any(np.isnan(diff_3d), axis=1)
+        sq_err = np.sum(diff_3d ** 2, axis=1)
+        sq_err[any_nan] = np.nan
+        path_mse[held_out_index] = float(np.nanmean(sq_err))
+        ensemble_mse_arr[held_out_index] = path_mse[held_out_index]
+
+        sim_axial_mean = np.nanmean(sim_axial, axis=1)
+        sim_radial_mean = np.nanmean(sim_radial, axis=1)
+        axial_mse[held_out_index] = float(np.nanmean((real_axial_mean - sim_axial_mean) ** 2))
+        radial_mse[held_out_index] = float(np.nanmean((real_radial_mean - sim_radial_mean) ** 2))
+        endpoint_mean_error[held_out_index] = float(
+            (real_axial_mean[-1] - sim_axial_mean[-1]) ** 2
+            + (real_radial_mean[-1] - sim_radial_mean[-1]) ** 2
+        )
+
+        real_ax_valid = real_sf.axial[-1][np.isfinite(real_sf.axial[-1])]
+        real_rad_valid = real_sf.radial[-1][np.isfinite(real_sf.radial[-1])]
+        sim_ax_valid = sim_axial[-1][np.isfinite(sim_axial[-1])]
+        sim_rad_valid = sim_radial[-1][np.isfinite(sim_radial[-1])]
+        if real_ax_valid.size > 0 and sim_ax_valid.size > 0:
+            final_axial_w[held_out_index] = float(stats.wasserstein_distance(real_ax_valid, sim_ax_valid))
+        if real_rad_valid.size > 0 and sim_rad_valid.size > 0:
+            final_radial_w[held_out_index] = float(stats.wasserstein_distance(real_rad_valid, sim_rad_valid))
+
+        T_traj = real_axial_mean.size
+        for hi, h in enumerate(rollout_horizon_values):
+            if h >= T_traj:
+                continue
+            horizon_errors[held_out_index, hi] = float(
+                (real_axial_mean[h] - sim_axial_mean[h]) ** 2
+                + (real_radial_mean[h] - sim_radial_mean[h]) ** 2
+            )
+            ens_diff_h = real_chroms[h] - sim_chrom[h]
+            ens_sq_h = np.sum(ens_diff_h ** 2, axis=0)
+            ens_sq_h[np.any(np.isnan(ens_diff_h), axis=0)] = np.nan
+            horizon_ensemble_mse[held_out_index, hi] = float(np.nanmean(ens_sq_h))
+            horizon_path_mse[held_out_index, hi] = horizon_ensemble_mse[held_out_index, hi]
+
+        # ---- 3. Rolling-window forecast (matches forecast_horizon_cross_validate, deterministic=True)
+        T_cell = test_cell.chromosomes.shape[0]
+        for hi, h in enumerate(forecast_horizon_values):
+            if h >= T_cell:
+                continue
+            n_windows = T_cell - h
+            window_mses = []
+            for t0 in range(n_windows):
+                sim_h = _forecast_window_one(
+                    test_cell, model, t0, h, seed=0, deterministic=True,
+                )
+                real_h = test_cell.chromosomes[t0 + h]
+                diff = real_h - sim_h
+                sq = np.sum(diff ** 2, axis=0)
+                sq[np.any(np.isnan(diff), axis=0)] = np.nan
+                window_mses.append(float(np.nanmean(sq)))
+            mean_mse = float(np.nanmean(window_mses))
+            fc_path_mse[held_out_index, hi] = mean_mse
+            fc_ens_mse[held_out_index, hi] = mean_mse  # det. mode == path
+
+    cv_result = None
+    if compute_one_step:
+        cv_result = CVResult(
+            held_out_errors=cv_errors,
+            mean_error=float(np.nanmean(cv_errors)),
+            fold_sd=float(np.nanstd(cv_errors)),
+        )
+
+    rollout_result = RolloutCVResult(
+        horizons=rollout_horizon_values,
+        path_mse=path_mse,
+        ensemble_mse=ensemble_mse_arr,
+        axial_mse=axial_mse,
+        radial_mse=radial_mse,
+        endpoint_mean_error=endpoint_mean_error,
+        final_axial_wasserstein=final_axial_w,
+        final_radial_wasserstein=final_radial_w,
+        horizon_errors=horizon_errors,
+        horizon_path_mse=horizon_path_mse,
+        horizon_ensemble_mse=horizon_ensemble_mse,
+    )
+
+    forecast_result = ForecastHorizonResult(
+        horizons=forecast_horizon_values,
+        ensemble_mse=fc_ens_mse,
+        path_mse=fc_path_mse,
+    )
+
+    return cv_result, rollout_result, forecast_result
+
+
 def fit_model(
     cells: list[TrimmedCell],
     config: FitConfig | None = None,
@@ -748,9 +963,14 @@ def fit_model(
     if config is None:
         config = FitConfig()
 
+    from chromlearn.model_fitting.basis import make_basis_with_envelope
+
     BasisClass = BSplineBasis if config.basis_type == "bspline" else HatBasis
     if _topology_has_chroms(config.topology):
-        basis_xx = BasisClass(config.r_min_xx, config.r_max_xx, config.n_basis_xx)
+        basis_xx = make_basis_with_envelope(
+            BasisClass, config.r_min_xx, config.r_max_xx, config.n_basis_xx,
+            envelope_r0=config.envelope_r0_xx, envelope_w=config.envelope_w_xx,
+        )
     else:
         basis_xx = None
     basis_xy = BasisClass(config.r_min_xy, config.r_max_xy, config.n_basis_xy)

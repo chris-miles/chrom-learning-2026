@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 
-from chromlearn.model_fitting.basis import BSplineBasis, HatBasis
+from chromlearn.model_fitting.basis import BSplineBasis, EnvelopedBasis, HatBasis
 from chromlearn.model_fitting.diffusion import DiffusionResult
 
 
@@ -31,7 +31,7 @@ class FittedModel:
     theta: np.ndarray
     n_basis_xx: int
     n_basis_xy: int
-    basis_xx: BSplineBasis | HatBasis | None
+    basis_xx: BSplineBasis | HatBasis | EnvelopedBasis | None
     basis_xy: BSplineBasis | HatBasis
     D_x: float
     dt: float
@@ -95,12 +95,16 @@ class FittedModel:
 
         basis_xx_payload = {}
         if self.basis_xx is not None:
+            inner_xx = self.basis_xx.inner if isinstance(self.basis_xx, EnvelopedBasis) else self.basis_xx
             basis_xx_payload = {
-                "basis_xx_type": "bspline" if isinstance(self.basis_xx, BSplineBasis) else "hat",
-                "basis_xx_r_min": self.basis_xx.r_min,
-                "basis_xx_r_max": self.basis_xx.r_max,
-                "basis_xx_n_basis": self.basis_xx.n_basis,
+                "basis_xx_type": "bspline" if isinstance(inner_xx, BSplineBasis) else "hat",
+                "basis_xx_r_min": inner_xx.r_min,
+                "basis_xx_r_max": inner_xx.r_max,
+                "basis_xx_n_basis": inner_xx.n_basis,
             }
+            if isinstance(self.basis_xx, EnvelopedBasis):
+                basis_xx_payload["basis_xx_envelope_r0"] = self.basis_xx.envelope_r0
+                basis_xx_payload["basis_xx_envelope_w"] = self.basis_xx.envelope_w
 
         cutoff_payload = {}
         if self.r_cutoff_xx is not None:
@@ -154,6 +158,12 @@ class FittedModel:
                 float(data["basis_xx_r_max"]),
                 n_basis_xx,
             )
+            if "basis_xx_envelope_r0" in data and "basis_xx_envelope_w" in data:
+                basis_xx = EnvelopedBasis(
+                    inner=basis_xx,
+                    envelope_r0=float(data["basis_xx_envelope_r0"]),
+                    envelope_w=float(data["basis_xx_envelope_w"]),
+                )
 
         diffusion_model = None
         if "diffusion_has_model" in data and bool(data["diffusion_has_model"]):

@@ -312,7 +312,7 @@ def estimate_diffusion_variable(
     fit_result=None,
     basis_xx=None,
     basis_xy=None,
-    lambda_ridge: float = 1e-3,
+    lambda_ridge: float = 1e-6,
     topology: str = "poles",
     r_cutoff_xx: float | None = None,
     nonneg: bool = True,

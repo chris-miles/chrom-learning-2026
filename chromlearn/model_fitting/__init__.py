@@ -39,11 +39,16 @@ class FitConfig:
             or ``"distance"`` (from spindle center).
         topology: Interaction topology — "poles" (default), "center",
             "poles_and_chroms", or "center_and_chroms".
-        r_cutoff_xx: If not None, chromosome-chromosome forces are zeroed
-            for distances above this cutoff (microns).  This creates a
-            short-range-only xx interaction, useful for testing whether
-            the xx term is capturing local steric repulsion vs acting as
-            a long-range nuisance absorber.
+        r_cutoff_xx: Hard cutoff (microns) above which xx forces are zeroed.
+            Deprecated; prefer ``envelope_r0_xx`` / ``envelope_w_xx`` for a
+            smooth (no-kink) short-range kernel.  Mutually exclusive with the
+            envelope parameters.
+        envelope_r0_xx: Center of the smooth steric envelope (microns) applied
+            to the xx basis.  When set, every xx basis column is multiplied by
+            ``e(r) = 0.5 * (1 - tanh((r - r0)/w))`` before fitting, yielding a
+            kernel that decays smoothly to zero past ``r0``.  Must be paired
+            with ``envelope_w_xx``.
+        envelope_w_xx: Width (microns) of the smooth envelope transition.
     """
 
     _VALID_BASIS_TYPES: ClassVar = frozenset({"bspline", "hat"})
@@ -73,6 +78,8 @@ class FitConfig:
     D_coordinate: str = "axial"
     topology: str = "poles"
     r_cutoff_xx: float | None = None
+    envelope_r0_xx: float | None = None
+    envelope_w_xx: float | None = None
 
     def __post_init__(self) -> None:
         if self.basis_type not in self._VALID_BASIS_TYPES:
@@ -94,4 +101,14 @@ class FitConfig:
             raise ValueError(
                 f"Unknown endpoint_method {self.endpoint_method!r}; "
                 f"must be one of {sorted(self._VALID_ENDPOINT_METHODS)}"
+            )
+        envelope_set = (self.envelope_r0_xx is not None) or (self.envelope_w_xx is not None)
+        if envelope_set and (self.envelope_r0_xx is None or self.envelope_w_xx is None):
+            raise ValueError(
+                "envelope_r0_xx and envelope_w_xx must both be set or both be None."
+            )
+        if envelope_set and self.r_cutoff_xx is not None:
+            raise ValueError(
+                "r_cutoff_xx and envelope_{r0,w}_xx are mutually exclusive; "
+                "use the envelope (smooth) form going forward."
             )
