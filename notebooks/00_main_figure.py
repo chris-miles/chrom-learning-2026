@@ -501,13 +501,15 @@ def _path_mse_pp(cell, traj):
 #   identifiability + chromosome-correlated noise fitting, NOT a clean
 #   causal advantage for CS-CH coupling.  See NB03b for the
 #   non-identifiability discussion.
-print("Computing pp-only vs pp+cp LOO metrics...")
+print("Computing pp-only vs pp+cp vs cp-only LOO metrics...")
 cell_mats = [_build_cell_matrices(c) for c in cells]
 n_pp = N_BASIS_PP
 path_mse_pp_only = np.empty(len(cells))
 path_mse_full = np.empty(len(cells))
+path_mse_cp_only = np.empty(len(cells))
 rmse1_pp_only = np.empty(len(cells))
 rmse1_full = np.empty(len(cells))
+rmse1_cp_only = np.empty(len(cells))
 for i, cell in enumerate(cells):
     G_train = np.vstack([cell_mats[j][0] for j in range(len(cells)) if j != i])
     V_train = np.concatenate([cell_mats[j][1] for j in range(len(cells)) if j != i])
@@ -515,15 +517,18 @@ for i, cell in enumerate(cells):
 
     theta_pp_only = _ridge_fit(G_train[:, :n_pp], V_train, R=R_pp_mat)
     theta_full_loo = _ridge_fit(G_train, V_train, R=R_full_mat)
+    theta_cp_only = _ridge_fit(G_train[:, n_pp:], V_train, R=R_cp_mat)
 
     # 1-step velocity prediction error on held-out cell
     rmse1_pp_only[i] = float(np.sqrt(np.mean((V_test - G_test[:, :n_pp] @ theta_pp_only) ** 2)))
     rmse1_full[i] = float(np.sqrt(np.mean((V_test - G_test @ theta_full_loo) ** 2)))
+    rmse1_cp_only[i] = float(np.sqrt(np.mean((V_test - G_test[:, n_pp:] @ theta_cp_only) ** 2)))
 
     # Forward rollout path MSE
     f_pp_only_loo = _force_callable(basis_pp, theta_pp_only)
     f_pp_full_loo = _force_callable(basis_pp, theta_full_loo[:n_pp])
     f_cp_full_loo = _force_callable(basis_cp, theta_full_loo[n_pp:])
+    f_cp_only_loo = _force_callable(basis_cp, theta_cp_only)
 
     poles_init = cell.centrioles[0].T  # (2, 3)
     n_steps = cell.centrioles.shape[0] - 1
@@ -532,23 +537,28 @@ for i, cell in enumerate(cells):
     traj_full = _simulate_poles_det(poles_init, dt, n_steps,
                                     f_pp=f_pp_full_loo, f_cp=f_cp_full_loo,
                                     chromosomes=cell.chromosomes)
+    traj_cp = _simulate_poles_det(poles_init, dt, n_steps,
+                                  f_cp=f_cp_only_loo,
+                                  chromosomes=cell.chromosomes)
     path_mse_pp_only[i] = _path_mse_pp(cell, traj_pp)
     path_mse_full[i] = _path_mse_pp(cell, traj_full)
+    path_mse_cp_only[i] = _path_mse_pp(cell, traj_cp)
 
-print(f"  1-step RMSE  pp-only: {rmse1_pp_only.mean():.5f}, pp+cp: {rmse1_full.mean():.5f} "
-      f"um/s; delta = {(rmse1_pp_only - rmse1_full).mean():+.5f}")
-print(f"  Path MSE     pp-only: {path_mse_pp_only.mean():.3f}, pp+cp: {path_mse_full.mean():.3f} "
-      f"um^2; delta = {(path_mse_pp_only - path_mse_full).mean():+.3f}")
+print(f"  1-step RMSE  pp-only: {rmse1_pp_only.mean():.5f}, pp+cp: {rmse1_full.mean():.5f}, "
+      f"cp-only: {rmse1_cp_only.mean():.5f} um/s")
+print(f"  Path MSE     pp-only: {path_mse_pp_only.mean():.3f}, pp+cp: {path_mse_full.mean():.3f}, "
+      f"cp-only: {path_mse_cp_only.mean():.3f} um^2")
 
 # %%
 # --- Bootstrap kernels (cell-level resampling) ----------------------
 N_BOOT_F2 = 100
-print(f"Bootstrapping pp-only and pp+cp kernels (n_boot={N_BOOT_F2})...")
+print(f"Bootstrapping pp-only, pp+cp, and cp-only kernels (n_boot={N_BOOT_F2})...")
 r_pp_grid = np.linspace(R_MIN, R_MAX, 200)
 r_cp_grid = np.linspace(R_MIN, R_MAX, 200)
 boot_fpp_pp_only = np.empty((N_BOOT_F2, len(r_pp_grid)))
 boot_fpp_full = np.empty((N_BOOT_F2, len(r_pp_grid)))
 boot_fcp_full = np.empty((N_BOOT_F2, len(r_cp_grid)))
+boot_fcp_cp_only = np.empty((N_BOOT_F2, len(r_cp_grid)))
 rng_f2 = np.random.default_rng(2026)
 for b in range(N_BOOT_F2):
     idx_b = rng_f2.choice(len(cells), size=len(cells), replace=True)
@@ -556,9 +566,11 @@ for b in range(N_BOOT_F2):
     V_b = np.concatenate([cell_mats[j][1] for j in idx_b])
     theta_pp_b = _ridge_fit(G_b[:, :n_pp], V_b, R=R_pp_mat)
     theta_full_b = _ridge_fit(G_b, V_b, R=R_full_mat)
+    theta_cp_b = _ridge_fit(G_b[:, n_pp:], V_b, R=R_cp_mat)
     boot_fpp_pp_only[b] = basis_pp.evaluate(r_pp_grid) @ theta_pp_b
     boot_fpp_full[b] = basis_pp.evaluate(r_pp_grid) @ theta_full_b[:n_pp]
     boot_fcp_full[b] = basis_cp.evaluate(r_cp_grid) @ theta_full_b[n_pp:]
+    boot_fcp_cp_only[b] = basis_cp.evaluate(r_cp_grid) @ theta_cp_b
 
 # %%
 # --- Render Fig 2 ---------------------------------------------------
@@ -628,7 +640,11 @@ mask_cp = (r_cp_grid >= cp_lo) & (r_cp_grid <= cp_hi)
 _plot_kernel_band(ax_fcp, r_cp_grid[mask_cp],
                   N_CHROM_SCALE * boot_fcp_full[:, mask_cp],
                   OKABE_ITO["vermil"],
-                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (upper-bound scale)")
+                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (pp+cp model)")
+_plot_kernel_band(ax_fcp, r_cp_grid[mask_cp],
+                  N_CHROM_SCALE * boot_fcp_cp_only[:, mask_cp],
+                  OKABE_ITO["green"],
+                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (cp-only ablation)")
 ax_fcp.axhline(0.0, color="0.5", linestyle="--", linewidth=0.6)
 ax_fcp.set_xlabel("Chromosome-to-pole distance (μm)")
 ax_fcp.set_ylabel(f"{N_CHROM_SCALE} · $f_{{cp}}(r)$  (μm/s) "
@@ -648,22 +664,25 @@ ax_fcp.set_ylim(y_min_f2, y_max_f2)
 # headline metric consistent with main-text Fig 3.  The bars are
 # very close, supporting Alex's "CS-CS sufficient" claim, but they
 # are not exactly equal (see the printed summary below for caveats).
-xs_bar_f2 = np.array([0.0, 0.7])
+xs_bar_f2 = np.array([0.0, 0.7, 1.4])
 m_pp, se_pp = float(path_mse_pp_only.mean()), float(path_mse_pp_only.std(ddof=1) / np.sqrt(len(cells)))
 m_fl, se_fl = float(path_mse_full.mean()),    float(path_mse_full.std(ddof=1) / np.sqrt(len(cells)))
+m_cp, se_cp = float(path_mse_cp_only.mean()), float(path_mse_cp_only.std(ddof=1) / np.sqrt(len(cells)))
 ax_strip.bar(xs_bar_f2[0], m_pp, width=0.45, color=OKABE_ITO["blue"],
              alpha=0.85, edgecolor="white", linewidth=0.6)
 ax_strip.bar(xs_bar_f2[1], m_fl, width=0.45, color=OKABE_ITO["vermil"],
              alpha=0.85, edgecolor="white", linewidth=0.6)
-ax_strip.errorbar(xs_bar_f2, [m_pp, m_fl],
-                  yerr=[se_pp, se_fl], fmt="none",
+ax_strip.bar(xs_bar_f2[2], m_cp, width=0.45, color=OKABE_ITO["green"],
+             alpha=0.85, edgecolor="white", linewidth=0.6)
+ax_strip.errorbar(xs_bar_f2, [m_pp, m_fl, m_cp],
+                  yerr=[se_pp, se_fl, se_cp], fmt="none",
                   ecolor="0.2", capsize=4, linewidth=1.0)
 ax_strip.set_xticks(xs_bar_f2)
-ax_strip.set_xticklabels(["pp-only", "pp+cp"])
+ax_strip.set_xticklabels(["pp-only", "pp+cp", "cp-only"])
 ax_strip.set_ylabel("LOO path MSE (μm²)")
 ax_strip.set_title("Held-out pole-trajectory error",
                    loc="left", fontsize=8.5)
-ax_strip.set_xlim(-0.45, 1.15)
+ax_strip.set_xlim(-0.45, 1.85)
 ax_strip.set_ylim(bottom=0.0)
 
 # Numerical summary printed to the notebook output (no on-figure
@@ -697,6 +716,14 @@ print("identifiability — real chromosome positions enter the rollout")
 print("as covariates, so pp+cp absorbs CH-correlated noise without a")
 print("clean causal advantage.  See NB03b for the partition")
 print("reconciliation; 1-step RMSE is the autonomous comparison.")
+print()
+print("cp-only ablation:")
+print(f"  1-step RMSE: {rmse1_cp_only.mean():.5f} um/s")
+print(f"  Path MSE:    {path_mse_cp_only.mean():.2f} um^2")
+print("  Note: cp-only is structurally insufficient — it cannot reproduce")
+print("  pole motion without the inter-pole interaction.  This is an")
+print("  ablation, not a partition claim; the (f_pp, f_cp) split inside")
+print("  the pp+cp model remains non-identifiable (see Fig S1).")
 
 # Panel labels
 for ax, label in [(ax_fpp, "A"), (ax_fcp, "B"), (ax_strip, "C")]:
@@ -1180,27 +1207,54 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig 4 — Effective diffusion D(d)
+# ## Fig 4 — Effective diffusion D(d) and drift-signal fraction over the window
 #
 # Alex's docx Result 3D: "learned effective diffusion of CHs, which is
 # greater far from the spindle, which supports findings of our previous
 # paper."
 #
-# Local diffusivity is estimated from the mean-squared residual
-# displacement after subtracting the fitted deterministic force,
-# $\langle |\delta X - \hat F(X) \cdot dt|^2 \rangle / (2 \cdot d \cdot dt)$, which
-# removes the leading drift contamination that otherwise biases
+# **Panel A.**  Local diffusivity is estimated from the mean-squared
+# residual displacement after subtracting the fitted deterministic force,
+# $\langle |\delta X - \hat F(X) \cdot dt|^2 \rangle / (2 \cdot d \cdot dt)$,
+# which removes the leading drift contamination that otherwise biases
 # quadratic displacement estimators in this drift-dominated, spatially
 # heterogeneous setting.  In the Itô convention, the projected drift
 # absorbed by the stage-1 force estimate already includes any
 # basis-resolvable diffusion-gradient $\nabla\!\cdot\!D$ contribution
 # (Frishman & Ronceray PRX 2020, App. H Eq. H2 and Eq. 15), so no
 # additional $\nabla\!\cdot\!D$ correction is applied; the estimator
-# is not localization-noise-corrected, which is negligible here given
-# per-step drift ≫ localization noise.  Coordinate ``d`` is reserved
+# is not localization-noise-corrected.  Coordinate ``d`` is reserved
 # for the spindle-center distance to avoid collision with the
-# SFI-inspired pairwise interaction distance
-# pairwise distance ``r``.
+# SFI-inspired pairwise interaction distance ``r``.
+#
+# **Panel B.**  Local drift signal fraction over the steady-elongation
+# regime,
+#
+# $$
+#   f_{\mathrm{drift}}(d;\,T_{\mathrm{steady}}) \;=\;
+#   \frac{|F(d)|^{2}\,T_{\mathrm{steady}}}
+#        {|F(d)|^{2}\,T_{\mathrm{steady}} + 2\,D(d)},
+# $$
+#
+# the 1-D (force-direction) reduction of the Frishman--Ronceray capacity
+# rate $\tfrac{1}{2}\,F^{\!\top}\!D^{-1}F$ accumulated over
+# $T_{\mathrm{steady}}$ (PRX 2020, arXiv:1809.09650).  Bounded $[0, 1]$;
+# $f = 0.5$ when drift-squared equals diffusive variance along the force
+# direction over the window.  Computed at the state level (per chromosome
+# per frame) and then median + IQR-binned by $d$ to avoid ratio-of-
+# smoothed-mean artifacts.
+#
+# $T_{\mathrm{steady}} = 150$ s is the duration of the steady spindle-
+# elongation phase reported in Result 1 (Fig 1) and Alex's docx
+# ("the elongation rate of the spindle length remains remarkably constant
+# for ~ 2.5 min").  This is the timescale over which the inferred
+# constant-coefficient drift law is biologically expected to apply; the
+# trimmed window (~475 s) is intentionally NOT used because the docx
+# explicitly warns that motors switch on/off between phases, so a longer
+# accumulation window would integrate force terms outside the modeled
+# regime.  Spatial ordering and shape are robust to the choice of $T$;
+# the 50/50 crossover only appears for sufficiently long $T$
+# ($T \gtrsim 60$ s; sensitivity sweep in Fig S5).
 
 # %%
 N_BASIS_D = 8
@@ -1257,47 +1311,172 @@ d_grid = np.linspace(EVAL_LO, EVAL_HI, 200)
 print(f"Plot range clipped to [{EVAL_LO:.2f}, {EVAL_HI:.2f}] um (data support)")
 
 # %%
-fig4, ax4 = plt.subplots(figsize=(5.5, 3.6))
+# Local drift signal fraction over the steady-elongation regime:
+#
+#   f_drift(d; T) = |F(d)|^2 T / (|F(d)|^2 T + 2 D(d))     [1D-along-F]
+#
+# Frishman & Ronceray PRX 2020 / arXiv:1809.09650 cast SFI capacity as the
+# rate at which a drifted trajectory becomes distinguishable from pure
+# Brownian motion, with signal scale F^T D^{-1} F.  Our scalar-D form is
+# the per-state, force-direction-aligned reduction.
+#
+# T = T_steady is fixed at 150 s (~2.5 min), the duration of the steady
+# spindle-elongation phase per Alex's docx Result 1: "the elongation rate
+# of the spindle length (CS-CS distance) remains remarkably constant for
+# ~ 2.5 min".  This is the biologically motivated timescale over which the
+# inferred constant-coefficient drift law is meant to apply (the docx
+# explicitly warns that motors switch on/off between phases, so a longer
+# accumulation window would integrate force terms outside the modeled
+# regime).  T_steady is NOT the per-cell trimmed-window length, which is
+# longer (~475 s for NEB to 0.4 NEB-AO).  The supplement (Fig S5 panel A)
+# sweeps T to show the spatial ordering is robust.
+#
+# We compute chi_i = T_steady |F_i|^2 / (2 D_i) at the STATE level (per
+# chromosome per frame), then bin medians/quantiles by spindle-center
+# distance d so we get an honest aggregate without ratio-of-smoothed-mean
+# artifacts.
+from chromlearn.model_fitting.diffusion import _predicted_force
 
-# Per-cell faint curves
+T_STEADY = 150.0  # seconds; docx Result 1 anchor (steady-elongation phase)
+# Per-cell trimmed window length (kept for context; NOT used to compute
+# the main-panel f_drift, only reported for transparency).
+T_obs_per_cell = np.array([(c.chromosomes.shape[0] - 1) * config.dt
+                            for c in cells])
+T_OBS_MED = float(np.median(T_obs_per_cell))
+T_OBS_MIN, T_OBS_MAX = float(T_obs_per_cell.min()), float(T_obs_per_cell.max())
+print(f"Trimmed-window length T_obs across cells: median {T_OBS_MED:.0f} s, "
+      f"range [{T_OBS_MIN:.0f}, {T_OBS_MAX:.0f}] s "
+      "(reported for context only)")
+print(f"Main-panel reference timescale T_steady = {T_STEADY:.0f} s "
+      "(docx Result 1: steady-elongation phase ~ 2.5 min)")
+
+print("Computing f_drift(d; T_steady) and per-step Pe(d) at every observation...")
+fmag_chunks, d_chunks, D_at_d_chunks = [], [], []
+for cell in cells:
+    coord_arr = _coord_fn(cell.chromosomes, cell)  # (T, N), spindle-center
+    T_frames = cell.chromosomes.shape[0]
+    for t in range(T_frames - 1):  # match _coord_fn's force support
+        F = _predicted_force(
+            cell, t,
+            fit_result=model,
+            basis_xx=model.basis_xx,
+            basis_xy=model.basis_xy,
+            topology=model.topology,
+        )
+        Fmag = np.linalg.norm(F, axis=1)
+        d_t = coord_arr[t]
+        valid = np.isfinite(Fmag) & np.isfinite(d_t)
+        if valid.any():
+            fmag_chunks.append(Fmag[valid])
+            d_chunks.append(d_t[valid])
+            D_at_d_chunks.append(D_pooled.evaluate(d_t[valid]))
+
+force_mags_d = np.concatenate(fmag_chunks)
+d_force = np.concatenate(d_chunks)
+D_at_obs = np.concatenate(D_at_d_chunks)
+dt_step = config.dt
+
+# Mask off any non-positive D(d) — the spline can dip below zero in
+# undersampled tails; those points carry no signal-fraction information.
+ok = np.isfinite(D_at_obs) & (D_at_obs > 0.0) & np.isfinite(force_mags_d)
+
+# Per-step Pe (kept for the supplement)
+Pe_step_obs = np.full_like(force_mags_d, np.nan)
+Pe_step_obs[ok] = force_mags_d[ok] * np.sqrt(dt_step / (2.0 * D_at_obs[ok]))
+
+# State-level chi_i = T_steady |F_i|^2 / (2 D_i) and f_drift_i
+chi_obs = np.full_like(force_mags_d, np.nan)
+chi_obs[ok] = T_STEADY * (force_mags_d[ok] ** 2) / (2.0 * D_at_obs[ok])
+fdrift_obs = chi_obs / (chi_obs + 1.0)
+
+# Bin by d
+N_BINS_F4 = 18
+bin_edges_f4 = np.linspace(EVAL_LO, EVAL_HI, N_BINS_F4 + 1)
+bin_centers_f4 = 0.5 * (bin_edges_f4[:-1] + bin_edges_f4[1:])
+bin_idx_f4 = np.clip(np.digitize(d_force, bin_edges_f4) - 1, 0, N_BINS_F4 - 1)
+
+fdrift_med = np.full(N_BINS_F4, np.nan)
+fdrift_lo = np.full(N_BINS_F4, np.nan)
+fdrift_hi = np.full(N_BINS_F4, np.nan)
+n_per_bin = np.zeros(N_BINS_F4, dtype=int)
+for b in range(N_BINS_F4):
+    mask = (bin_idx_f4 == b) & np.isfinite(fdrift_obs)
+    n_per_bin[b] = int(mask.sum())
+    if n_per_bin[b] >= 30:  # mask poorly supported bins
+        fdrift_med[b] = float(np.median(fdrift_obs[mask]))
+        fdrift_lo[b] = float(np.quantile(fdrift_obs[mask], 0.25))
+        fdrift_hi[b] = float(np.quantile(fdrift_obs[mask], 0.75))
+
+print(f"  f_drift overall median: {np.nanmedian(fdrift_obs):.3f} "
+      f"(IQR [{np.nanquantile(fdrift_obs, 0.25):.3f}, "
+      f"{np.nanquantile(fdrift_obs, 0.75):.3f}])")
+print(f"  per-step Pe median:     {np.nanmedian(Pe_step_obs):.3f}")
+print(f"  bins with >= 30 obs:    {int(np.sum(n_per_bin >= 30))} of {N_BINS_F4}")
+
+# %%
+fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(9.0, 3.6),
+                                   gridspec_kw={"wspace": 0.32})
+
+# --- Panel A: D(d) ---
 for d_res in D_per_cell:
     if d_res is None:
         continue
     vals = d_res.evaluate(d_grid)
-    ax4.plot(d_grid, vals, color="0.7", linewidth=0.6, alpha=0.55,
-             zorder=1)
+    ax4a.plot(d_grid, vals, color="0.7", linewidth=0.6, alpha=0.55,
+              zorder=1)
 
-# Pooled f_corrected curve (headline)
 pooled_vals = D_pooled.evaluate(d_grid)
-ax4.plot(d_grid, pooled_vals, color=OKABE_ITO["vermil"], linewidth=2.2,
-         label="pooled D(d), f_corrected", zorder=3)
+ax4a.plot(d_grid, pooled_vals, color=OKABE_ITO["vermil"], linewidth=2.2,
+          label="pooled D(d), f_corrected", zorder=3)
+ax4a.axhline(model.D_x, color="0.3", linestyle="--", linewidth=1.0,
+             label=f"constant D = {model.D_x:.4f} μm²/s", zorder=2)
 
-# Constant-D baseline
-ax4.axhline(model.D_x, color="0.3", linestyle="--", linewidth=1.0,
-            label=f"constant D = {model.D_x:.4f} μm²/s", zorder=2)
-
-# Data-density rug along bottom of axis
 sample_distances = np.random.default_rng(0).choice(
     all_distances, size=min(5000, all_distances.size), replace=False
 )
-y_lo, y_hi = ax4.get_ylim()
+y_lo, y_hi = ax4a.get_ylim()
 rug_y = y_lo + 0.02 * (y_hi - y_lo)
-ax4.scatter(sample_distances, np.full_like(sample_distances, rug_y),
-            s=1.0, color="0.4", alpha=0.18, zorder=0,
-            marker="|", linewidths=0.5)
+ax4a.scatter(sample_distances, np.full_like(sample_distances, rug_y),
+             s=1.0, color="0.4", alpha=0.18, zorder=0,
+             marker="|", linewidths=0.5)
 
-ax4.set_xlim(EVAL_LO, EVAL_HI)
-ax4.set_ylim(bottom=0.0)
-ax4.set_xlabel("Distance from spindle center, $d$ (μm)")
-ax4.set_ylabel("D (μm²/s)")
-ax4.set_title("Effective diffusion grows away from spindle center",
-              loc="left", fontsize=9)
-ax4.legend(frameon=False, loc="upper left")
-ax4.text(0.99, 0.04,
-         f"n={sum(1 for x in D_per_cell if x is not None)} cells; "
-         "tail of D(d) is sparsely sampled — see rug.",
-         transform=ax4.transAxes, ha="right", va="bottom",
-         fontsize=6, color="0.4")
+ax4a.set_xlim(EVAL_LO, EVAL_HI)
+ax4a.set_ylim(bottom=0.0)
+ax4a.set_xlabel("Distance from spindle center, $d$ (μm)")
+ax4a.set_ylabel("D (μm²/s)")
+ax4a.set_title("Effective diffusion grows away from spindle center",
+               loc="left", fontsize=9)
+ax4a.legend(frameon=False, loc="upper left", fontsize=7)
+ax4a.text(0.99, 0.04,
+          f"n={sum(1 for x in D_per_cell if x is not None)} cells; "
+          "tail of D(d) is sparsely sampled — see rug.",
+          transform=ax4a.transAxes, ha="right", va="bottom",
+          fontsize=6, color="0.4")
+
+# --- Panel B: f_drift(d; T_steady) drift signal fraction over the
+# steady-elongation phase ---
+ax4b.fill_between(bin_centers_f4, fdrift_lo, fdrift_hi,
+                  color=OKABE_ITO["blue"], alpha=0.18, linewidth=0,
+                  label="IQR")
+ax4b.plot(bin_centers_f4, fdrift_med, "o-", color=OKABE_ITO["blue"],
+          linewidth=1.6, markersize=4.0, label="median")
+ax4b.axhline(0.5, color="0.5", linestyle="--", linewidth=0.8,
+             label=r"50/50 crossover")
+ax4b.set_xlim(EVAL_LO, EVAL_HI)
+ax4b.set_ylim(0.0, 1.0)
+ax4b.set_xlabel("Distance from spindle center, $d$ (μm)")
+ax4b.set_ylabel(r"$f_{\mathrm{drift}}(d;\,T_{\mathrm{steady}})$")
+ax4b.set_title("Drift signal fraction over the steady-elongation phase",
+               loc="left", fontsize=9)
+ax4b.legend(frameon=False, loc="upper left", fontsize=7)
+ax4b.text(0.99, 0.04,
+          rf"$T_{{\mathrm{{steady}}}}={T_STEADY:.0f}$ s",
+          transform=ax4b.transAxes, ha="right", va="bottom",
+          fontsize=7, color="0.4")
+
+for ax_panel, label in [(ax4a, "A"), (ax4b, "B")]:
+    ax_panel.text(-0.13, 1.04, label, transform=ax_panel.transAxes,
+                  fontsize=11, fontweight="bold", va="bottom", ha="left")
 
 fig4.tight_layout()
 save_figure(fig4, "fig4_diffusion_landscape")
