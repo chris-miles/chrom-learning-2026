@@ -645,12 +645,15 @@ plt.show()
 #   is not separately recoverable from this data.
 
 # %% [markdown]
-# ## Fig S2. Forecast error vs horizon and per-cell path MSE
+# ## Fig S2. LOOCV path MSE vs window length and per-cell path MSE
 
 # %%
 TOPOLOGIES_S2 = list(TOPOLOGY_DISPLAY.keys())
-HORIZON_FRAMES_S2 = tuple(range(1, 31))
-T_MAX_S2 = 60.0  # seconds
+# Cover the full trimmed window so the right edge of the panel-A curve
+# approaches the full-window path MSE shown in main Fig 3 panel C.
+_MAX_TRIM_FRAMES_S2 = max(c.chromosomes.shape[0] for c in cells)
+HORIZON_FRAMES_S2 = tuple(range(1, _MAX_TRIM_FRAMES_S2))
+T_MAX_S2 = float(HORIZON_FRAMES_S2[-1]) * DT  # seconds
 
 print(f"Fig S2: rollout LOOCV across {len(TOPOLOGIES_S2)} topologies, "
       f"0..{T_MAX_S2:.0f} s ({HORIZON_FRAMES_S2[-1]} frames at dt={DT:.0f} s)...")
@@ -667,31 +670,43 @@ fig_s2, (ax_s2, ax_s2b) = plt.subplots(
     1, 2, figsize=(12.0, 4.2),
     gridspec_kw={"width_ratios": [1.0, 1.4]},
 )
+# Path MSE if we cut the LOOCV window at h frames: the running mean
+# of per-frame ensemble MSE from frame 1 to frame h.  At h = 1 this
+# equals the single-horizon MSE; at h = trim-window length it
+# approaches the path MSE used as the topology-selection criterion
+# in main Fig 3 panel C, modulo small NaN-weighting differences in
+# how `rollout_cross_validate` computes path_mse internally.
+# Plotting this as a function of h makes the supplement and the
+# main-text bar chart tell one consistent story.
+def _path_mse_through_h(rollout_res):
+    per_cell = rollout_res.horizon_ensemble_mse  # (n_cells, n_horizons)
+    horizon_idx = np.arange(1, per_cell.shape[1] + 1, dtype=float)
+    running_mean_per_cell = np.nancumsum(per_cell, axis=1) / horizon_idx
+    return np.nanmean(running_mean_per_cell, axis=0)
+
 for topology in TOPOLOGIES_S2:
     info = TOPOLOGY_DISPLAY[topology]
     res = rollout_results[topology]
     horizons_s = res.horizons.astype(float) * DT  # seconds
     keep = horizons_s <= T_MAX_S2
-    mean_curve = np.nanmean(res.horizon_ensemble_mse, axis=0)
-    # Prepend (0, 0) so the curves start at the origin (every model
-    # has zero ensemble MSE at horizon 0 by construction).
-    xs_plot = np.concatenate([[0.0], horizons_s[keep]])
-    ys_plot = np.concatenate([[0.0], mean_curve[keep]])
+    path_curve = _path_mse_through_h(res)
     lw = 1.8 if info["admissible"] else 1.4
-    ax_s2.plot(xs_plot, ys_plot,
+    ax_s2.plot(horizons_s[keep], path_curve[keep],
                ls=info["linestyle"], lw=lw,
                color=info["color"], label=info["label"])
 
 ax_s2.set_xlim(0, T_MAX_S2)
-ax_s2.set_xlabel("Forecast horizon (s)")
-ax_s2.set_ylabel("From-NEB ensemble MSE (μm²)")
-ax_s2.set_title("Held-out forecast error vs horizon",
+ax_s2.set_xlabel("Window length, h (s)")
+ax_s2.set_ylabel("LOOCV path MSE through h (μm²)")
+ax_s2.set_title("LOOCV path MSE vs. window length",
                 loc="left", fontsize=9)
 ax_s2.legend(loc="upper left", frameon=False, fontsize=7)
 
-# Inset: each curve minus the main-text short-range curve, so the
-# topology winner at each horizon is visible despite the curves
-# nearly coinciding on the absolute scale.
+# Inset: each topology's path-MSE-through-h minus the short-range
+# path-MSE-through-h, so the topology ordering as the window grows is
+# visible despite the curves nearly coinciding on the absolute scale.
+# At h near the trim-window length the inset value approaches the
+# Δ-from-short-range path-MSE shown in Fig 3 panel C.
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes as _inset_axes
 ax_s2_inset = _inset_axes(
     ax_s2, width="46%", height="26%",
@@ -700,9 +715,9 @@ ax_s2_inset = _inset_axes(
     loc="lower right", borderpad=0.5,
 )
 _canon_topo = "poles_and_chroms_enveloped"
-_canon_curve = np.nanmean(rollout_results[_canon_topo].horizon_ensemble_mse, axis=0)
+_canon_path_curve = _path_mse_through_h(rollout_results[_canon_topo])
 _canon_horizons_s = rollout_results[_canon_topo].horizons.astype(float) * DT
-_inset_t_max = 40.0
+_inset_t_max = T_MAX_S2
 _keep = _canon_horizons_s <= _inset_t_max
 for topology in TOPOLOGIES_S2:
     if topology == _canon_topo:
@@ -710,18 +725,17 @@ for topology in TOPOLOGIES_S2:
     info = TOPOLOGY_DISPLAY[topology]
     res = rollout_results[topology]
     horizons_s = res.horizons.astype(float) * DT
-    mean_curve = np.nanmean(res.horizon_ensemble_mse, axis=0)
-    diff = mean_curve - _canon_curve
-    xs_inset = np.concatenate([[0.0], horizons_s[_keep]])
-    ys_inset = np.concatenate([[0.0], diff[_keep]])
-    ax_s2_inset.plot(xs_inset, ys_inset,
+    path_curve = _path_mse_through_h(res)
+    diff = path_curve - _canon_path_curve
+    ax_s2_inset.plot(horizons_s[_keep], diff[_keep],
                      ls=info["linestyle"], lw=1.2,
                      color=info["color"])
 ax_s2_inset.axhline(0.0, color=TOPOLOGY_DISPLAY[_canon_topo]["color"],
                     lw=1.2, ls="-")
 ax_s2_inset.set_xlim(0, _inset_t_max)
-ax_s2_inset.set_xlabel("horizon (s)", fontsize=6.5, labelpad=1.5)
-ax_s2_inset.set_ylabel("Δ MSE", fontsize=6.5, labelpad=1.5)
+ax_s2_inset.set_xlabel("h (s)", fontsize=6.5, labelpad=1.5)
+ax_s2_inset.set_ylabel("Δ path MSE\n(other - short)",
+                       fontsize=6.5, labelpad=1.5)
 ax_s2_inset.tick_params(labelsize=6, pad=1.5)
 
 # Panel B: per-cell grouped bars — one cluster of (n_topologies)
@@ -773,31 +787,35 @@ save_figure(fig_s2, "figS2_forecast_horizon")
 plt.show()
 
 # %% [markdown]
-# Fig S2. Forecast accuracy is similar across topologies, with cell-
-# to-cell variation dominating model-to-model variation. (A) From-NEB
-# ensemble MSE under deterministic rollout vs forecast horizon
-# (0 to 60 s), for the same four topologies as in main Fig 3. The
-# inset plots each curve minus the short-range curve so the cross-
-# topology ordering at every horizon is visible despite near-overlap
-# on the absolute scale. (B) Per-cell path MSE (LOOCV) for the same
-# four topologies, with cells sorted by mean path MSE across models.
+# Fig S2. The main-text topology selection holds at every window
+# length once enough frames are integrated. (A) LOOCV path MSE
+# computed on the trimmed window cut at h frames, plotted against h,
+# for the same four topologies as in main Fig 3. Each curve is the
+# running average of per-frame ensemble MSE; at h = trim-window
+# length the curve approaches the path MSE shown in Fig 3 panel C. The
+# inset plots each topology's path-MSE-through-h minus the short-
+# range value, so the topology ordering as the window grows is
+# visible despite the absolute curves nearly coinciding. (B) Per-
+# cell path MSE (LOOCV) for the same four topologies, with cells
+# sorted by mean path MSE across models.
 #
-# - Horizon range follows the manuscript anchor: "show held-out
-#   forecast error vs horizon for up to 10 frames." With dt = 5 s,
-#   the code computes horizons through 30 frames (150 s); the
-#   displayed range is 0-60 s, slightly beyond the 10-frame (50 s)
-#   anchor so the early-horizon ordering remains readable.
+# - The horizon range covers the full trimmed analysis window
+#   (NEB to 0.4 of NEB-AO) so the right edge of the curve
+#   approaches the full-window path MSE shown as a bar in main
+#   Fig 3 panel C. The 10-frame (50 s) horizon called out in the
+#   manuscript falls inside this range.
 # - The deterministic rollout integrates the fitted drift field
 #   forward from the real initial frame without stochastic noise;
 #   D_x is not used as a noise source in this mode. Stochastic-
 #   ensemble rollouts give the same mean by construction when D is
 #   small and the force field is not strongly curved (see Fig 3
 #   bullets), at the cost of Monte Carlo variance.
-# - The relative-difference inset reveals that even where curves
-#   visually overlap on the absolute MSE scale, one topology is
-#   consistently lower than the others at every horizon. This is the
-#   horizon-resolved version of the path MSE selection in main
-#   Fig 3 panel C.
+# - At very short h the topology curves are within fold-to-fold
+#   noise (the gathering dynamics in the first few frames are easy
+#   for any reasonable model). The short-range topology pulls ahead
+#   over the middle and late frames, where the chromosome-chromosome
+#   steric envelope matters; this is what makes it the path-MSE
+#   winner at h = trim-window in main Fig 3 panel C.
 # - Panel B shows that within a single cell, the four topologies
 #   produce path MSE values that are close to each other relative to
 #   the spread across cells. Cell-level structure (initial pole

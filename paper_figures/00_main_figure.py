@@ -899,7 +899,7 @@ F_XY_OVERLAY = [
     ("poles",                       "-",
      "poles"),
     ("center",                      "--",
-     "center (chrom -> spindle midpoint)"),
+     "center"),
     ("poles_and_chroms",            ":",
      "poles + chroms (free)"),
     ("poles_and_chroms_enveloped",  (0, (5, 1, 1, 1)),
