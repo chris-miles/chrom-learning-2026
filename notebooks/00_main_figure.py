@@ -223,25 +223,25 @@ T = cell.chromosomes.shape[0]
 n_chrom = cell.chromosomes.shape[2]
 t_norm = np.linspace(0.0, 1.0, T)
 
-chrom_com = np.nanmean(cell.chromosomes, axis=2)
-origin = chrom_com.mean(axis=0)
-chrom_com_centered = chrom_com - origin
-_, _, Vt = np.linalg.svd(chrom_com_centered, full_matrices=False)
-pca_basis = Vt[:2].T
+# Pooled-positions PCA: fit on all centrosome and chromosome positions
+# across time, with PC1 sign-aligned to the inter-pole axis.  Same
+# construction used for Fig 3b so the two figures share a spindle frame.
+pca = fit_pca_basis(cell)
 
-chrom_com_pca = chrom_com_centered @ pca_basis
-p1_pca = (cell.centrioles[:, :, 0] - origin) @ pca_basis
-p2_pca = (cell.centrioles[:, :, 1] - origin) @ pca_basis
+chrom_com = np.nanmean(cell.chromosomes, axis=2)
+chrom_com_pca = pca.project(chrom_com)
+p1_pca = pca.project(cell.centrioles[:, :, 0])
+p2_pca = pca.project(cell.centrioles[:, :, 1])
 
 pole_com = 0.5 * (cell.centrioles[:, :, 0] + cell.centrioles[:, :, 1])
-pole_com_pca = (pole_com - origin) @ pca_basis
+pole_com_pca = pca.project(pole_com)
 
 # Individual chromosomes — Purples, faint
 for j in range(n_chrom):
     chrom_j = cell.chromosomes[:, :, j]
     if np.any(np.isnan(chrom_j)):
         continue
-    cj_pca = (chrom_j - origin) @ pca_basis
+    cj_pca = pca.project(chrom_j)
     _colorline(ax_pca, cj_pca[:, 0], cj_pca[:, 1], t_norm,
                cmap="Purples", linewidth=0.5, alpha=0.30, zorder=1)
 
@@ -346,9 +346,10 @@ plt.show()
 # and chromosome-COM velocities across all cells; the positive-lag
 # peak shows that chromosome motion follows pole motion.
 #
-# - The PCA basis is fit from the chromosome COM in 3D, then sign-aligned
-#   so PC1 points along the pole-pole axis. No manual centering is
-#   applied.
+# - The PCA basis is fit on the pooled 3D positions of both centrosomes
+#   and all chromosomes in this cell across time, with PC1 sign-aligned
+#   to the inter-pole axis. The same construction is used in Fig 3b so
+#   the two PCA panels share a spindle frame.
 # - Example cell shown is `rpe18_ctr_032`.
 # - Trajectories are trimmed from NEB to `frac = 0.4` of the NEB-to-AO
 #   interval, the early-prometaphase gathering window in which
