@@ -21,7 +21,9 @@ import sys
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+if "ipykernel" not in sys.modules:
+    # Headless script execution (no Jupyter); avoid window popups.
+    matplotlib.use("Agg")
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np

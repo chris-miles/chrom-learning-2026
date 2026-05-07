@@ -564,8 +564,10 @@ plt.show()
 #
 # "ito" = current positions, "ito_shift" = previous positions (decorrelates
 # localisation noise), "strato" = midpoint (Stratonovich convention).
-# With constant D(x) there is no spurious-drift correction, so all three
-# conventions should give essentially the same kernel.
+# The Stratonovich branch estimates a midpoint current and then applies the
+# SFI force correction D * div(feature).  Because D is estimated from residuals
+# and includes tracking/localization noise, this panel is a sensitivity
+# diagnostic rather than an alternative main estimator.
 
 # %%
 ESTIMATOR_MODES = ["ito", "ito_shift", "strato"]
