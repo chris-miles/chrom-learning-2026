@@ -10,58 +10,38 @@
 # %% [markdown]
 # # 00b -- Supplement figures
 #
-# Lightweight assembler for the supplementary figures supporting Chris's
-# part of *Hierarchy of spindle forces in prometaphase*.  Each figure is
-# rendered as a self-contained PDF/PNG; Alex can combine into multi-panel
-# supplement layouts as he prefers.
+# Five figures, each rendered as a self-contained PDF/PNG:
 #
-# Scope is deliberately tight -- four figures, each load-bearing for a
-# specific main-text claim:
-#
-# Companion to **Fig 2** (CS-CS sufficient):
 # - **S1** -- per-cell ``f_pp`` and ``f_cp`` kernels from the pp+cp
 #   pole-velocity model, plus the constrained-share refit sweep showing
 #   the ``(f_pp, f_cp)`` partition is non-identifiable.
-#
-# Companions to **Fig 3** (kernels + topology comparison):
-# - **S2** -- held-out forecast error vs horizon (0-60 s, from-NEB
-#   ensemble MSE) for all five topologies.  Vertical mark at 25 s
-#   (h = 5 frames) is the early-horizon regime where the enveloped
-#   topology pulls ahead.
-# - **S3** -- hyperparameter and convention sensitivity on the canonical
-#   ``poles_and_chroms_enveloped`` topology: ``(n_basis, λ_rough)``
-#   path-MSE heatmap, Itô vs Stratonovich path-MSE bars, plus the
-#   pooled ``f_xy`` and ``f_xx`` kernels learned under each calculus
-#   convention so the reader sees how the kernel itself shifts.
-# - **S4** -- per-cell ``f_xy`` and ``f_xx`` kernel spaghetti for the
-#   selected topology, over the pooled bootstrap CI band, with per-cell
-#   median highlighted.
-#
-# Cuts vs the longer earlier draft and why:
-#
-# - Aggregate per-cell pp-only-vs-pp+cp strip plot: the dual-metric
-#   headline bars are already in main-text Fig 2, and the per-cell
-#   heterogeneity story is now told by Fig S1 (a, b) for a single
-#   model rather than as a paired comparison.
-# - 5-topology per-cell path-MSE strip plot: the horizon curve in
-#   S2 already shows the admissible topologies tracking each other
-#   closely across horizons; the per-cell breakdown adds little.
-#   Paired foldwise Δ/SE on path MSE belongs in the methods table or
-#   the S2 caption, not as a separate figure.
-# - D-estimator robustness overlay: the ``f_corrected`` estimator is
-#   justified in methods text because it explicitly subtracts the
-#   fitted drift before estimating residual variance (Frishman &
-#   Ronceray 2020 App. H).  Methods text alone carries the burden.
+# - **S2** -- panel A: held-out from-NEB ensemble MSE vs forecast
+#   horizon (0-60 s) for the four topologies in main Fig 3; panel B:
+#   per-cell, per-model LOOCV path-MSE grouped bars.
+# - **S3** -- hyperparameter and convention sensitivity on the
+#   ``poles_and_chroms_enveloped`` topology: kernel-vs-hyperparameter
+#   sweep with three values per parameter [canonical, 10×, 0.1×],
+#   plus Itô vs Stratonovich path-MSE bars and pooled-kernel
+#   comparison.
+# - **S4** -- per-cell ``f_xy`` and short-range ``f_xx`` kernel
+#   spaghetti for the selected topology, over the pooled bootstrap
+#   CI band.
+# - **S5** -- drift-vs-diffusion sensitivity: T-sweep
+#   ``f_drift(d; T)``, drift-vs-diffusion crossover length
+#   ``L*(d) = 2 D / |F|`` (μm), and ``tau_50(d) = 2 D / |F|^2``.
 
 # %%
 import sys
 from itertools import product
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.linalg import block_diag
 from scipy.optimize import minimize, minimize_scalar
+from scipy.spatial.distance import pdist
 
 from chromlearn import find_repo_root
 
@@ -130,23 +110,24 @@ OKABE_ITO = {
     "purple":  "#CC79A7",
 }
 
-# Topology display order and colors.  Admissible topologies use the
-# Okabe-Ito core palette; nuisance upper-bound models use neutral grays.
+# Topology display order and colors.  Mirrors main Fig 3 exactly so
+# the same model has the same color/linestyle across figures.
 TOPOLOGY_DISPLAY = {
     "poles":                       {"label": "poles",
                                     "color": OKABE_ITO["blue"],
+                                    "linestyle": "-",
                                     "admissible": True},
     "center":                      {"label": "center",
                                     "color": OKABE_ITO["green"],
+                                    "linestyle": "--",
                                     "admissible": True},
-    "poles_and_chroms_enveloped":  {"label": "poles + chroms\n(enveloped)",
+    "poles_and_chroms_enveloped":  {"label": "poles + chroms\n(short range)",
                                     "color": OKABE_ITO["vermil"],
+                                    "linestyle": (0, (5, 1, 1, 1)),
                                     "admissible": True},
-    "poles_and_chroms":            {"label": "poles + chroms\n(free xx)",
-                                    "color": "0.45",
-                                    "admissible": False},
-    "center_and_chroms":           {"label": "center + chroms\n(free xx)",
-                                    "color": "0.30",
+    "poles_and_chroms":            {"label": "poles + chroms\n(free)",
+                                    "color": OKABE_ITO["purple"],
+                                    "linestyle": ":",
                                     "admissible": False},
 }
 
@@ -163,14 +144,12 @@ def save_figure(fig, name):
 # %% [markdown]
 # ## Configuration
 #
-# Mirrors NB04's canonical configuration so panels are consistent with
-# the main figure.  ``cells_raw`` is preserved for the endpoint sweep in
-# Fig S3 (c), which retrims from the raw catalog.
+# Canonical configuration matching the main figure.
 
 # %%
 CONDITION = "rpe18_ctr"
 
-# Trajectory model (chromosome dynamics; matches NB04 / NB07)
+# Trajectory model (chromosome dynamics)
 FRAC_NEB_AO = 0.4
 N_BASIS_TRAJ = 10
 LAMBDA_RIDGE = 1e-6
@@ -181,12 +160,25 @@ ENVELOPE_R0_XX = 1.5
 ENVELOPE_W_XX = 0.3
 DT = 5.0
 
-# Pole-velocity model (used only by Fig S1; matches NB03 / NB03b)
+# Pole-velocity model (used only by Fig S1)
 N_BASIS_POLE = 6
 LAMBDA_ROUGH_POLE = 1.0
 
 cells_raw = load_condition(CONDITION)
 cells = [trim_trajectory(c, method="neb_ao_frac", frac=FRAC_NEB_AO) for c in cells_raw]
+
+_xx_pair_dists = []
+for _cell in cells:
+    _chroms = np.moveaxis(_cell.chromosomes, 2, 1)  # (T, N, 3)
+    for _t in range(_chroms.shape[0]):
+        _frame = _chroms[_t]
+        _ok = ~np.any(np.isnan(_frame), axis=1)
+        if _ok.sum() < 2:
+            continue
+        _xx_pair_dists.extend(pdist(_frame[_ok]))
+_xx_pair_dists = np.asarray(_xx_pair_dists)
+R_XX_MIN_PLOT = float(np.quantile(_xx_pair_dists, 0.01))
+print(f"Chrom-chrom pair-distance 1%-quantile = {R_XX_MIN_PLOT:.3f} um")
 print(f"Loaded {len(cells)} {CONDITION} cells (frac={FRAC_NEB_AO}).")
 
 
@@ -221,8 +213,8 @@ def make_traj_config(topology, **overrides):
 #
 # The pp+cp pole-velocity model lives outside ``chromlearn.model_fitting``
 # (which fits chromosome dynamics, not pole dynamics).  We inline the
-# minimal NB03 / NB03b machinery needed for the per-cell kernel fits and
-# the constrained-share refit sweep.
+# minimal machinery needed for the per-cell kernel fits and the
+# constrained-share refit sweep.
 
 # %%
 basis_pp = BSplineBasis(R_MIN, R_MAX, N_BASIS_POLE)
@@ -358,7 +350,7 @@ def stack_sep_rows(cell_rows):
     return np.vstack(G), np.array(Y)
 
 
-# Constrained-share helpers (NB03b ``constrained_share_sweep``).
+# Constrained-share helpers.
 def _smooth_abs(x, eps=1e-12):
     return np.sqrt(x * x + eps) - np.sqrt(eps)
 
@@ -491,7 +483,7 @@ def constrained_share_sweep(cell_sep_rows, target_shares):
 # %% [markdown]
 # ## Fig S1 -- Per-cell pp/cp kernels and partition non-identifiability
 #
-# Three subpanels in one figure (companion to Fig 2):
+# Three subpanels in one figure:
 #
 # - **(a)** per-cell ``f_pp(r)`` from the pp+cp pole-velocity model.
 # - **(b)** per-cell ``f_cp(r)`` from the same fits.
@@ -557,35 +549,47 @@ percell_cp_curves = np.stack(
 median_pp = np.median(percell_pp_curves, axis=0)
 median_cp = np.median(percell_cp_curves, axis=0)
 
-ax = axes_s1[0]
-for curve in percell_pp_curves:
-    ax.plot(r_pp_plot, curve, color="0.55", lw=0.7, alpha=0.55)
-ax.plot(r_pp_plot, median_pp, color="0.15", lw=1.6, ls="--",
-        label="per-cell median")
-ax.plot(r_pp_plot, phi_pp_plot @ theta_pooled[:N_PP], color=OKABE_ITO["blue"],
-        lw=2.0, label="pooled fit")
-ax.axhline(0, color="0.5", lw=0.6, ls="--")
-ax.set_xlabel("Pole-pole distance (μm)")
-ax.set_ylabel("$f_{pp}(r)$  (μm/s) "
-              "\n+ attractive · - repulsive")
-ax.set_title("Per-cell pole-pole kernel, pp+cp model",
-             loc="left", fontsize=8.5)
-ax.legend(loc="best", frameon=False, fontsize=6.5)
+N_CHROM_SCALE_S1 = 46  # match main Fig 2 panel B scaling
+percell_cp_curves_scaled = N_CHROM_SCALE_S1 * percell_cp_curves
+median_cp_scaled = N_CHROM_SCALE_S1 * median_cp
+pooled_cp_scaled = N_CHROM_SCALE_S1 * (phi_cp_plot @ theta_pooled[N_PP:])
 
-ax = axes_s1[1]
-for curve in percell_cp_curves:
-    ax.plot(r_cp_plot, curve, color="0.55", lw=0.7, alpha=0.55)
-ax.plot(r_cp_plot, median_cp, color="0.15", lw=1.6, ls="--",
-        label="per-cell median")
-ax.plot(r_cp_plot, phi_cp_plot @ theta_pooled[N_PP:], color=OKABE_ITO["vermil"],
-        lw=2.0, label="pooled fit")
-ax.axhline(0, color="0.5", lw=0.6, ls="--")
-ax.set_xlabel("Chromosome-to-pole distance (μm)")
-ax.set_ylabel("$f_{cp}(r)$  (μm/s) "
-              "\n+ attractive · - repulsive")
-ax.set_title("Per-cell chromosome-to-pole kernel, pp+cp model",
-             loc="left", fontsize=8.5)
-ax.legend(loc="best", frameon=False, fontsize=6.5)
+ax_s1A = axes_s1[0]
+for curve in percell_pp_curves:
+    ax_s1A.plot(r_pp_plot, curve, color="0.55", lw=0.7, alpha=0.55)
+ax_s1A.plot(r_pp_plot, median_pp, color="0.15", lw=1.6, ls="--",
+            label="per-cell median")
+ax_s1A.plot(r_pp_plot, phi_pp_plot @ theta_pooled[:N_PP], color=OKABE_ITO["blue"],
+            lw=2.0, label="pooled fit")
+ax_s1A.axhline(0, color="0.5", lw=0.6, ls="--")
+ax_s1A.set_xlim(r_pp_plot[0], r_pp_plot[-1])
+ax_s1A.set_xlabel("Pole-pole distance (μm)")
+ax_s1A.set_ylabel("$f_{pp}(r)$  (μm/s) "
+                  "\n+ attractive · - repulsive")
+ax_s1A.set_title("Per-cell pole-pole kernel, pp+cp model",
+                 loc="left", fontsize=8.5)
+ax_s1A.legend(loc="best", frameon=False, fontsize=6.5)
+
+ax_s1B = axes_s1[1]
+for curve in percell_cp_curves_scaled:
+    ax_s1B.plot(r_cp_plot, curve, color="0.55", lw=0.7, alpha=0.55)
+ax_s1B.plot(r_cp_plot, median_cp_scaled, color="0.15", lw=1.6, ls="--",
+            label="per-cell median")
+ax_s1B.plot(r_cp_plot, pooled_cp_scaled, color=OKABE_ITO["vermil"],
+            lw=2.0, label="pooled fit")
+ax_s1B.axhline(0, color="0.5", lw=0.6, ls="--")
+ax_s1B.set_xlim(r_cp_plot[0], r_cp_plot[-1])
+ax_s1B.set_xlabel("Chromosome-to-pole distance (μm)")
+ax_s1B.set_ylabel(f"{N_CHROM_SCALE_S1} · $f_{{cp}}(r)$  (μm/s) "
+                   "\n+ attractive · - repulsive")
+ax_s1B.set_title(f"Per-cell total CS-CH contribution ({N_CHROM_SCALE_S1}× per-pair)",
+                 loc="left", fontsize=8.5)
+ax_s1B.legend(loc="best", frameon=False, fontsize=6.5)
+
+_y_min_s1 = min(ax_s1A.get_ylim()[0], ax_s1B.get_ylim()[0])
+_y_max_s1 = max(ax_s1A.get_ylim()[1], ax_s1B.get_ylim()[1])
+ax_s1A.set_ylim(_y_min_s1, _y_max_s1)
+ax_s1B.set_ylim(_y_min_s1, _y_max_s1)
 
 ax = axes_s1[2]
 sweep_actual = np.array([row["mean_actual_share"] for row in loocv_rows])
@@ -610,31 +614,22 @@ for ax_panel, label in zip(axes_s1, ["A", "B", "C"]):
     ax_panel.text(-0.13, 1.04, label, transform=ax_panel.transAxes,
                   fontsize=11, fontweight="bold", va="bottom", ha="left")
 
-# Figure-level note flagging that S1 is a pole-velocity regression with
-# chromosomes as observed covariates, NOT the chromosome-trajectory
-# force-inference model used in S2-S4.  Without this, a reader skimming
-# kernel panels with similar palette could conflate the two model
-# families.
-fig_s1.suptitle(
-    "pp+cp pole-velocity regression: chromosomes are observed covariates, "
-    "not the chromosome-trajectory force inference of S2-S4",
-    fontsize=8.0, color="0.3", y=1.02,
-)
 fig_s1.tight_layout()
 save_figure(fig_s1, "figS1_pp_cp_kernels_partition")
 plt.show()
 
 
 # %% [markdown]
-# ## Fig S2 -- Forecast error vs horizon, 0-60 s (companion to Fig 3)
+# ## Fig S2 -- Forecast error vs horizon, 0-60 s
 #
-# Held-out from-NEB ensemble MSE (deterministic drift rollout) vs horizon
-# for all five topologies.  Plotted in seconds throughout.  Admissible
-# topologies plotted with solid lines in Okabe-Ito colors; nuisance
-# upper-bound topologies dashed in gray.  Vertical reference at 25 s
-# (h = 5 frames) marks the early-horizon regime where the
-# ``poles_and_chroms_enveloped`` topology pulls ahead of the simpler
-# admissible variants.
+# Panel A: held-out from-NEB ensemble MSE (deterministic drift
+# rollout) vs horizon for the four topologies in main Fig 3, plus
+# a relative-difference inset (each curve minus the canonical
+# short-range curve) so the cross-topology winner at each horizon
+# is visible despite the curves nearly coinciding.
+#
+# Panel B: per-cell, per-model grouped bars of LOOCV path-MSE,
+# cells sorted by mean path-MSE across models.
 
 # %%
 TOPOLOGIES_S2 = list(TOPOLOGY_DISPLAY.keys())
@@ -652,28 +647,110 @@ for topology in TOPOLOGIES_S2:
     )
 
 # Render
-fig_s2, ax_s2 = plt.subplots(figsize=(6.8, 4.2))
+fig_s2, (ax_s2, ax_s2b) = plt.subplots(
+    1, 2, figsize=(12.0, 4.2),
+    gridspec_kw={"width_ratios": [1.0, 1.4]},
+)
 for topology in TOPOLOGIES_S2:
     info = TOPOLOGY_DISPLAY[topology]
     res = rollout_results[topology]
     horizons_s = res.horizons.astype(float) * DT  # seconds
     keep = horizons_s <= T_MAX_S2
     mean_curve = np.nanmean(res.horizon_ensemble_mse, axis=0)
-    ls = "-" if info["admissible"] else "--"
-    lw = 1.8 if info["admissible"] else 1.2
-    ax_s2.plot(horizons_s[keep], mean_curve[keep], ls=ls, lw=lw,
+    # Prepend (0, 0) so the curves start at the origin (every model
+    # has zero ensemble MSE at horizon 0 by construction).
+    xs_plot = np.concatenate([[0.0], horizons_s[keep]])
+    ys_plot = np.concatenate([[0.0], mean_curve[keep]])
+    lw = 1.8 if info["admissible"] else 1.4
+    ax_s2.plot(xs_plot, ys_plot,
+               ls=info["linestyle"], lw=lw,
                color=info["color"], label=info["label"])
 
-ANCHOR_S = 5 * DT  # 25 s, h=5 frames
-ax_s2.axvline(ANCHOR_S, color="0.35", lw=0.8, ls=":")
-ax_s2.text(ANCHOR_S, ax_s2.get_ylim()[1] * 0.04, f" {ANCHOR_S:.0f} s",
-           color="0.35", fontsize=7, va="bottom", ha="left")
 ax_s2.set_xlim(0, T_MAX_S2)
 ax_s2.set_xlabel("Forecast horizon (s)")
 ax_s2.set_ylabel("From-NEB ensemble MSE (μm²)")
 ax_s2.set_title("Held-out forecast error vs horizon",
-                loc="left", fontsize=8.5)
-ax_s2.legend(loc="best", frameon=False, fontsize=6.5, ncol=1)
+                loc="left", fontsize=9)
+ax_s2.legend(loc="upper left", frameon=False, fontsize=7)
+
+# Inset: each curve minus the main-text short-range curve, so the
+# topology winner at each horizon is visible despite the curves
+# nearly coinciding on the absolute scale.
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes as _inset_axes
+ax_s2_inset = _inset_axes(
+    ax_s2, width="46%", height="26%",
+    bbox_to_anchor=(0.0, 0.18, 1.0, 1.0),
+    bbox_transform=ax_s2.transAxes,
+    loc="lower right", borderpad=0.5,
+)
+_canon_topo = "poles_and_chroms_enveloped"
+_canon_curve = np.nanmean(rollout_results[_canon_topo].horizon_ensemble_mse, axis=0)
+_canon_horizons_s = rollout_results[_canon_topo].horizons.astype(float) * DT
+_inset_t_max = 40.0
+_keep = _canon_horizons_s <= _inset_t_max
+for topology in TOPOLOGIES_S2:
+    if topology == _canon_topo:
+        continue
+    info = TOPOLOGY_DISPLAY[topology]
+    res = rollout_results[topology]
+    horizons_s = res.horizons.astype(float) * DT
+    mean_curve = np.nanmean(res.horizon_ensemble_mse, axis=0)
+    diff = mean_curve - _canon_curve
+    xs_inset = np.concatenate([[0.0], horizons_s[_keep]])
+    ys_inset = np.concatenate([[0.0], diff[_keep]])
+    ax_s2_inset.plot(xs_inset, ys_inset,
+                     ls=info["linestyle"], lw=1.2,
+                     color=info["color"])
+ax_s2_inset.axhline(0.0, color=TOPOLOGY_DISPLAY[_canon_topo]["color"],
+                    lw=1.2, ls="-")
+ax_s2_inset.set_xlim(0, _inset_t_max)
+ax_s2_inset.set_xlabel("horizon (s)", fontsize=6.5, labelpad=1.5)
+ax_s2_inset.set_ylabel("Δ MSE", fontsize=6.5, labelpad=1.5)
+ax_s2_inset.tick_params(labelsize=6, pad=1.5)
+
+# Panel B: per-cell grouped bars — one cluster of (n_topologies)
+# bars per cell, cells sorted by their mean path-MSE across models
+# (best cell on the left).  Truncated y-axis like main Fig 3 panel C.
+percell_path_mse_s2 = {
+    t: np.asarray(rollout_results[t].path_mse) for t in TOPOLOGIES_S2
+}
+n_cells_s2 = len(cells)
+n_topo_s2 = len(TOPOLOGIES_S2)
+mean_across_models = np.mean(
+    np.stack([percell_path_mse_s2[t] for t in TOPOLOGIES_S2], axis=0),
+    axis=0,
+)
+cell_order = np.argsort(mean_across_models)
+cell_xs = np.arange(n_cells_s2, dtype=float)
+total_group_width = 0.78
+bar_width = total_group_width / n_topo_s2
+all_bar_values = []
+for ti, topology in enumerate(TOPOLOGIES_S2):
+    info = TOPOLOGY_DISPLAY[topology]
+    vals = percell_path_mse_s2[topology][cell_order]
+    offsets = (ti - (n_topo_s2 - 1) / 2.0) * bar_width
+    ax_s2b.bar(cell_xs + offsets, vals, width=bar_width * 0.92,
+               color=info["color"], alpha=0.85, edgecolor="white",
+               linewidth=0.4, label=info["label"].replace("\n", " "))
+    all_bar_values.extend(vals.tolist())
+all_bar_values = np.asarray(all_bar_values)
+y_lo_s2b = float(all_bar_values.min()) * 0.85
+y_hi_s2b = float(all_bar_values.max()) * 1.05
+ax_s2b.set_ylim(y_lo_s2b, y_hi_s2b)
+ax_s2b.set_xticks(cell_xs)
+ax_s2b.set_xticklabels(
+    [cells[i].cell_id.replace("rpe18_ctr_", "") for i in cell_order],
+    fontsize=7,
+)
+ax_s2b.set_xlabel("Cell (sorted by mean path-MSE across models)")
+ax_s2b.set_ylabel("LOO path MSE (μm²)")
+ax_s2b.set_title("Per-cell, per-model path-MSE",
+                 loc="left", fontsize=9)
+ax_s2b.legend(loc="upper left", frameon=False, fontsize=7, ncol=2)
+
+for ax_panel, label in [(ax_s2, "A"), (ax_s2b, "B")]:
+    ax_panel.text(-0.13, 1.04, label, transform=ax_panel.transAxes,
+                  fontsize=11, fontweight="bold", va="bottom", ha="left")
 
 fig_s2.tight_layout()
 save_figure(fig_s2, "figS2_forecast_horizon")
@@ -681,39 +758,31 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig S3 -- Hyperparameter and convention sensitivity (companion to Fig 3)
+# ## Fig S3 -- Hyperparameter and convention sensitivity
 #
-# - **(a)** Kernel-vs-hyperparameter sweep on the canonical
-#   ``poles_and_chroms_enveloped`` topology.  Each hyperparameter is varied
-#   independently with the other fixed at canonical so the column shows
-#   what THAT hyperparameter does in isolation.  Left column:
-#   ``n_basis`` sweep at fixed ``λ_rough``; right column: ``λ_rough``
-#   sweep at fixed ``n_basis``.  Rows are ``f_xy(r)`` (top) and
-#   ``f_xx(r)`` (bottom).  Held-out path MSE varies < 2% across this
-#   range; the bias-variance tradeoff is shown in kernel space (where it
-#   is visible) rather than trajectory space (where path-MSE smooths over
-#   it).  Replaces an earlier path-MSE heatmap that, on the canonical
-#   topology, was too low-pass to discriminate among kernels in this
-#   regime — see ``hyperparameter_methodology_pickup.md``.
-# - **(b)** Itô vs Stratonovich path-MSE bars (held-out).
-# - **(c, d)** Learned ``f_xy(r)`` and ``f_xx(r)`` from the pooled fit
-#   under the two calculus conventions, so the reader sees how the
-#   kernel itself shifts alongside the small held-out path-MSE
-#   difference in (b).
+# - **(A)** Kernel-vs-hyperparameter sweep on the
+#   ``poles_and_chroms_enveloped`` topology.  Each hyperparameter is
+#   varied independently with the other fixed at the main-text value.
+#   Left column: ``n_basis`` sweep at fixed ``λ_rough``; right column:
+#   ``λ_rough`` sweep at fixed ``n_basis``.  Rows are ``f_xy(r)``
+#   (top) and ``f_xx(r)`` (bottom).  Three values per parameter on a
+#   sequential viridis colormap (low → dark, high → light); the
+#   main-text value is drawn in bold solid linewidth.
+# - **(B)** Learned ``f_xy(r)`` from the pooled fit under Itô vs
+#   Stratonovich, with held-out path-MSE bars as a small inset.
+# - **(C)** Learned ``f_xx(r)`` (short range) under the two
+#   calculus conventions.
 
 # %%
 ROLLOUT_HORIZONS_S3 = (1, 5, 10, 20)
 
-# (a) Kernel-vs-hyperparameter sweep on the canonical
+# (a) Kernel-vs-hyperparameter sweep on the
 # poles_and_chroms_enveloped topology.  Each hyperparameter is varied
-# independently with the other fixed at canonical (codex review
-# 2026-05-06: the original 2x4 regime layout conflated n_basis with
-# lambda_rough; sweeping each one alone separates their bias-variance
-# contributions cleanly).  Held-out path MSE varies < 2% across this
-# range; the bias-variance tradeoff is shown in kernel space, not
-# trajectory space (see methods).
-S3A_NBASIS_SWEEP = [4, 6, 10, 16, 32, 64]
-S3A_LAMBDA_SWEEP = [1e-4, 1e-2, 1.0, 1e2, 1e4]
+# independently with the other fixed at canonical so each panel
+# isolates the effect of one parameter; the bias-variance tradeoff
+# is shown in kernel space rather than trajectory space.
+S3A_NBASIS_SWEEP = [4, N_BASIS_TRAJ, 30]
+S3A_LAMBDA_SWEEP = [0.1, LAMBDA_ROUGH, 10.0]
 
 print(f"Fig S3 (a) col 1: n_basis sweep at lambda_rough={LAMBDA_ROUGH:.0e} "
       f"({len(S3A_NBASIS_SWEEP)} fits)...")
@@ -759,132 +828,188 @@ for mode in ESTIMATOR_MODES:
     )
     mode_models[mode] = fit_model(cells, cfg)
 
-# Render
-import matplotlib as mpl
-
-fig_s3 = plt.figure(figsize=(16.5, 7.2),
-                     constrained_layout=True)
+# Render — layout: 2x3 grid where left and middle columns hold the
+# 2x2 sweep block A (xy on top, xx on bottom; n_basis on left,
+# lambda_rough on the middle), and the right column stacks the
+# Itô-vs-Stratonovich kernels (C: f_xy on top, D: f_xx on bottom),
+# matching the vertical layout of the sweep panels.  Panel B
+# (calculus-convention bars) is folded into C as a small inset to
+# save space.
+import matplotlib as _mpl
+fig_s3 = plt.figure(figsize=(12.0, 7.2), constrained_layout=True)
 gs = fig_s3.add_gridspec(
-    2, 4,
+    2, 3,
     height_ratios=[1.0, 1.0],
-    width_ratios=[1.05, 1.05, 0.95, 0.95],
+    width_ratios=[1.0, 1.0, 1.0],
 )
 
-# Top-left 2x2 block: kernel-vs-hyperparameter sweep
 ax_xy_nb = fig_s3.add_subplot(gs[0, 0])
 ax_xy_la = fig_s3.add_subplot(gs[0, 1])
 ax_xx_nb = fig_s3.add_subplot(gs[1, 0])
 ax_xx_la = fig_s3.add_subplot(gs[1, 1])
+ax_c = fig_s3.add_subplot(gs[0, 2])
+ax_d = fig_s3.add_subplot(gs[1, 2])
 
-r_kernel_eval = np.linspace(R_MIN, R_MAX, 300)
+F_XY_PLOT_MAX_S3 = 12.0
+r_xy_eval_s3 = np.linspace(R_MIN, F_XY_PLOT_MAX_S3, 250)
+r_xx_eval_s3 = np.linspace(R_XX_MIN_PLOT, R_MAX, 300)
 
-cmap_nb = mpl.colormaps["viridis"]
-cmap_la = mpl.colormaps["plasma"]
-norm_nb = mpl.colors.LogNorm(vmin=min(S3A_NBASIS_SWEEP),
-                              vmax=max(S3A_NBASIS_SWEEP))
-norm_la = mpl.colors.LogNorm(vmin=min(S3A_LAMBDA_SWEEP),
-                              vmax=max(S3A_LAMBDA_SWEEP))
+# Sequential viridis: low parameter -> dark, high parameter -> light;
+# main-text value highlighted by linewidth + bold solid line, NOT a
+# different color (so the colormap itself unambiguously conveys
+# parameter ordering).
+_cmap_sweep = _mpl.colormaps["viridis"]
 
-# Column 1: n_basis sweep at fixed lambda_rough
-for nb in S3A_NBASIS_SWEEP:
-    color = cmap_nb(norm_nb(nb))
-    fxy = s3a_models_nb[nb].evaluate_kernel("xy", r_kernel_eval)
-    fxx = s3a_models_nb[nb].evaluate_kernel("xx", r_kernel_eval)
-    ax_xy_nb.plot(r_kernel_eval, fxy, color=color, lw=1.4, alpha=0.9)
-    ax_xx_nb.plot(r_kernel_eval, fxx, color=color, lw=1.4, alpha=0.9)
-ax_xy_nb.axhline(0, color="0.5", lw=0.5, ls="--")
-ax_xx_nb.axhline(0, color="0.5", lw=0.5, ls="--")
-ax_xy_nb.set_title(rf"$n_\mathrm{{basis}}$ sweep ($\lambda_\mathrm{{rough}}={LAMBDA_ROUGH:.0e}$)",
-                    loc="left", fontsize=8.5)
-ax_xx_nb.set_xlabel("Chromosome-chromosome distance (μm)")
-ax_xy_nb.set_ylabel("$f_{xy}(r)$  (μm/s)\n+ attractive · - repulsive",
-                     fontsize=8)
-ax_xx_nb.set_ylabel("$f_{xx}(r)$  (μm/s)\n+ attractive · - repulsive",
-                     fontsize=8)
 
-# Column 2: lambda_rough sweep at fixed n_basis
-for la in S3A_LAMBDA_SWEEP:
-    color = cmap_la(norm_la(la))
-    fxy = s3a_models_la[la].evaluate_kernel("xy", r_kernel_eval)
-    fxx = s3a_models_la[la].evaluate_kernel("xx", r_kernel_eval)
-    ax_xy_la.plot(r_kernel_eval, fxy, color=color, lw=1.4, alpha=0.9)
-    ax_xx_la.plot(r_kernel_eval, fxx, color=color, lw=1.4, alpha=0.9)
-ax_xy_la.axhline(0, color="0.5", lw=0.5, ls="--")
-ax_xx_la.axhline(0, color="0.5", lw=0.5, ls="--")
-ax_xy_la.set_title(rf"$\lambda_\mathrm{{rough}}$ sweep ($n_\mathrm{{basis}}={N_BASIS_TRAJ}$)",
-                    loc="left", fontsize=8.5)
-ax_xx_la.set_xlabel("Chromosome-chromosome distance (μm)")
+def _sweep_styles(values, canonical):
+    """Return list of (value, color, lw, ls, zorder) for an N-value sweep."""
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    out = []
+    for i, v in enumerate(sorted_vals):
+        t = i / max(n - 1, 1)
+        t = 0.15 + 0.70 * t
+        color = _cmap_sweep(t)
+        if v == canonical:
+            out.append((v, color, 2.6, "-", 10))
+        else:
+            out.append((v, color, 1.4, "--", 3))
+    return out
 
-# Share y within each kernel row so visual contrast is honest
-for row_axes in [(ax_xy_nb, ax_xy_la), (ax_xx_nb, ax_xx_la)]:
-    y_lo = min(ax.get_ylim()[0] for ax in row_axes)
-    y_hi = max(ax.get_ylim()[1] for ax in row_axes)
-    for ax in row_axes:
-        ax.set_ylim(y_lo, y_hi)
 
-# Colorbars
-sm_nb = mpl.cm.ScalarMappable(cmap=cmap_nb, norm=norm_nb)
-sm_nb.set_array([])
-cb_nb = fig_s3.colorbar(sm_nb, ax=[ax_xy_nb, ax_xx_nb],
-                         shrink=0.78, pad=0.02, location="left")
-cb_nb.set_label(r"$n_\mathrm{basis}$", fontsize=8)
+for v, color, lw, ls, zo in _sweep_styles(S3A_NBASIS_SWEEP, N_BASIS_TRAJ):
+    fxy = s3a_models_nb[v].evaluate_kernel("xy", r_xy_eval_s3)
+    fxx = s3a_models_nb[v].evaluate_kernel("xx", r_xx_eval_s3)
+    label = (f"$n_\\mathrm{{basis}}={v}$ (main text)" if v == N_BASIS_TRAJ
+             else f"$n_\\mathrm{{basis}}={v}$")
+    ax_xy_nb.plot(r_xy_eval_s3, fxy, color=color, lw=lw, ls=ls,
+                  label=label, alpha=0.95, zorder=zo)
+    ax_xx_nb.plot(r_xx_eval_s3, fxx, color=color, lw=lw, ls=ls,
+                  alpha=0.95, zorder=zo)
 
-sm_la = mpl.cm.ScalarMappable(cmap=cmap_la, norm=norm_la)
-sm_la.set_array([])
-cb_la = fig_s3.colorbar(sm_la, ax=[ax_xy_la, ax_xx_la],
-                         shrink=0.78, pad=0.02, location="right")
-cb_la.set_label(r"$\lambda_\mathrm{rough}$", fontsize=8)
+for v, color, lw, ls, zo in _sweep_styles(S3A_LAMBDA_SWEEP, LAMBDA_ROUGH):
+    fxy = s3a_models_la[v].evaluate_kernel("xy", r_xy_eval_s3)
+    fxx = s3a_models_la[v].evaluate_kernel("xx", r_xx_eval_s3)
+    label = (rf"$\lambda_\mathrm{{rough}}={v:g}$ (main text)" if v == LAMBDA_ROUGH
+             else rf"$\lambda_\mathrm{{rough}}={v:g}$")
+    ax_xy_la.plot(r_xy_eval_s3, fxy, color=color, lw=lw, ls=ls,
+                  label=label, alpha=0.95, zorder=zo)
+    ax_xx_la.plot(r_xx_eval_s3, fxx, color=color, lw=lw, ls=ls,
+                  alpha=0.95, zorder=zo)
 
-# Right side: panels B, C, D from the Itô vs Stratonovich comparison
-ax_b = fig_s3.add_subplot(gs[0, 2])
+for ax in (ax_xy_nb, ax_xy_la):
+    ax.axhline(0, color="0.5", lw=0.5, ls="--")
+    ax.set_xlim(R_MIN, F_XY_PLOT_MAX_S3)
+for ax in (ax_xx_nb, ax_xx_la):
+    ax.axhline(0, color="0.5", lw=0.5, ls="--")
+    ax.set_xlim(R_XX_MIN_PLOT, R_MAX)
+
+# Tighten y-axes per row using the CANONICAL (main-text) curve's
+# range as the reference, padded by ~40 %.  This keeps all three
+# sweep curves in view (off-canonical curves stay inside this window
+# almost everywhere) while dropping the small-r blow-ups of extreme
+# sweep values, which would otherwise compress the visible range.
+def _canonical_clip(canonical_curve, pad_frac=0.40):
+    arr = np.asarray(canonical_curve)
+    arr = arr[np.isfinite(arr)]
+    lo = float(arr.min())
+    hi = float(arr.max())
+    pad = pad_frac * max(hi - lo, 1e-9)
+    return lo - pad, hi + pad
+
+_canon_xy = s3a_models_nb[N_BASIS_TRAJ].evaluate_kernel("xy", r_xy_eval_s3)
+_canon_xx = s3a_models_nb[N_BASIS_TRAJ].evaluate_kernel("xx", r_xx_eval_s3)
+_xy_lo, _xy_hi = _canonical_clip(_canon_xy)
+_xx_lo, _xx_hi = _canonical_clip(_canon_xx)
+for ax in (ax_xy_nb, ax_xy_la):
+    ax.set_ylim(_xy_lo, _xy_hi)
+for ax in (ax_xx_nb, ax_xx_la):
+    ax.set_ylim(_xx_lo, _xx_hi)
+
+ax_xy_nb.set_title(rf"$n_\mathrm{{basis}}$ sweep "
+                    rf"($\lambda_\mathrm{{rough}}={LAMBDA_ROUGH:g}$)",
+                    loc="left", fontsize=10)
+ax_xy_la.set_title(rf"$\lambda_\mathrm{{rough}}$ sweep "
+                    rf"($n_\mathrm{{basis}}={N_BASIS_TRAJ}$)",
+                    loc="left", fontsize=10)
+for _ax in (ax_xy_nb, ax_xy_la):
+    _ax.set_ylabel("$f_{xy}(r)$  (μm/s)\n+ attractive · - repulsive",
+                   fontsize=9)
+for _ax in (ax_xx_nb, ax_xx_la):
+    _ax.set_ylabel("$f_{xx}(r)$  (μm/s)\n+ attractive · - repulsive",
+                   fontsize=9)
+ax_xx_nb.set_xlabel("Chromosome-chromosome distance (μm)", fontsize=9)
+ax_xx_la.set_xlabel("Chromosome-chromosome distance (μm)", fontsize=9)
+for _ax in (ax_xy_nb, ax_xy_la, ax_xx_nb, ax_xx_la):
+    _ax.tick_params(labelsize=8)
+ax_xy_nb.legend(loc="best", frameon=False, fontsize=8)
+ax_xy_la.legend(loc="best", frameon=False, fontsize=8)
+
+# Panel B: Itô vs Stratonovich f_xy (with calculus-convention bar
+# inset in the bottom-right corner)
+for mode in ESTIMATOR_MODES:
+    info = MODE_DISPLAY[mode]
+    fxy = mode_models[mode].evaluate_kernel("xy", r_xy_eval_s3)
+    ax_c.plot(r_xy_eval_s3, fxy, color=info["color"], lw=1.8, label=info["label"])
+ax_c.axhline(0, color="0.5", lw=0.6, ls="--")
+ax_c.set_xlim(R_MIN, F_XY_PLOT_MAX_S3)
+ax_c.set_xlabel("Distance to partner (μm)", fontsize=9)
+ax_c.set_ylabel("$f_{xy}(r)$  (μm/s) "
+                "\n+ attractive · - repulsive", fontsize=9)
+ax_c.set_title("Learned $f_{xy}$ kernel",
+               loc="left", fontsize=10)
+ax_c.tick_params(labelsize=8)
+ax_c.legend(loc="upper left", frameon=False, fontsize=8)
+
 mode_means = [float(np.nanmean(mode_results[m].path_mse)) for m in ESTIMATOR_MODES]
 mode_se = [
     float(np.nanstd(mode_results[m].path_mse, ddof=1)
           / np.sqrt(np.sum(np.isfinite(mode_results[m].path_mse))))
     for m in ESTIMATOR_MODES
 ]
-ax_b.bar(np.arange(len(ESTIMATOR_MODES)), mode_means, yerr=mode_se,
-         capsize=3, color=[MODE_DISPLAY[m]["color"] for m in ESTIMATOR_MODES])
-ax_b.set_xticks(np.arange(len(ESTIMATOR_MODES)))
-ax_b.set_xticklabels([MODE_DISPLAY[m]["label"] for m in ESTIMATOR_MODES])
-ax_b.set_ylabel("path MSE (μm²)")
-ax_b.set_title("Calculus convention\n(held-out)",
-               loc="left", fontsize=8.5)
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes as _inset_axes_s3
+ax_b_inset = _inset_axes_s3(
+    ax_c, width="36%", height="34%",
+    bbox_to_anchor=(0.0, 0.05, 1.0, 1.0),
+    bbox_transform=ax_c.transAxes,
+    loc="lower right", borderpad=0.5,
+)
+ax_b_inset.bar(np.arange(len(ESTIMATOR_MODES)), mode_means, yerr=mode_se,
+               capsize=2.5, color=[MODE_DISPLAY[m]["color"] for m in ESTIMATOR_MODES],
+               width=0.55, edgecolor="white", linewidth=0.4)
+ax_b_inset.set_xticks(np.arange(len(ESTIMATOR_MODES)))
+ax_b_inset.set_xticklabels([MODE_DISPLAY[m]["label"] for m in ESTIMATOR_MODES],
+                            fontsize=6)
+ax_b_inset.set_ylabel("path MSE", fontsize=6, labelpad=1.5)
+ax_b_inset.tick_params(labelsize=6, pad=1.5)
+ax_b_inset.set_xlim(-0.6, len(ESTIMATOR_MODES) - 0.4)
 
-# Pooled kernel fits under Itô vs Stratonovich, plotted on the full
-# configured basis range so the small-r behavior is visible.
-r_kernel_eval = np.linspace(R_MIN, R_MAX, 300)
-
-ax_c = fig_s3.add_subplot(gs[1, 2])
+# Panel C: Itô vs Stratonovich f_xx
 for mode in ESTIMATOR_MODES:
     info = MODE_DISPLAY[mode]
-    fxy = mode_models[mode].evaluate_kernel("xy", r_kernel_eval)
-    ax_c.plot(r_kernel_eval, fxy, color=info["color"], lw=1.8, label=info["label"])
-ax_c.axhline(0, color="0.5", lw=0.6, ls="--")
-ax_c.set_xlabel("Distance to partner (μm)")
-ax_c.set_ylabel("$f_{xy}(r)$  (μm/s) "
-                "\n+ attractive · - repulsive")
-ax_c.set_title("Learned $f_{xy}$ kernel",
-               loc="left", fontsize=8.5)
-ax_c.legend(loc="best", frameon=False, fontsize=6.5)
-
-ax_d = fig_s3.add_subplot(gs[1, 3])
-for mode in ESTIMATOR_MODES:
-    info = MODE_DISPLAY[mode]
-    fxx = mode_models[mode].evaluate_kernel("xx", r_kernel_eval)
-    ax_d.plot(r_kernel_eval, fxx, color=info["color"], lw=1.8, label=info["label"])
+    fxx = mode_models[mode].evaluate_kernel("xx", r_xx_eval_s3)
+    ax_d.plot(r_xx_eval_s3, fxx, color=info["color"], lw=1.8, label=info["label"])
 ax_d.axhline(0, color="0.5", lw=0.6, ls="--")
-ax_d.set_xlabel("Chromosome-chromosome distance (μm)")
+ax_d.set_xlim(R_XX_MIN_PLOT, R_MAX)
+# Clip the y-axis so a Stratonovich-side blow-up at small r doesn't
+# distort the visible kernel comparison.  Use the Itô curve's range
+# (with a small pad) as the reference floor.
+_d_ito = mode_models["ito"].evaluate_kernel("xx", r_xx_eval_s3)
+_d_lo = float(np.nanmin(_d_ito))
+_d_hi = float(np.nanmax(_d_ito))
+_d_pad = 0.4 * (_d_hi - _d_lo + 1e-12)
+ax_d.set_ylim(_d_lo - _d_pad, _d_hi + _d_pad)
+ax_d.set_xlabel("Chromosome-chromosome distance (μm)", fontsize=9)
 ax_d.set_ylabel("$f_{xx}(r)$  (μm/s) "
-                "\n+ attractive · - repulsive")
-ax_d.set_title("Learned $f_{xx}$ kernel (enveloped)",
-               loc="left", fontsize=8.5)
-ax_d.legend(loc="best", frameon=False, fontsize=6.5)
+                "\n+ attractive · - repulsive", fontsize=9)
+ax_d.set_title("Learned $f_{xx}$ kernel (short range)",
+               loc="left", fontsize=10)
+ax_d.tick_params(labelsize=8)
+ax_d.legend(loc="best", frameon=False, fontsize=8)
 
-# Panel letters
-ax_xy_nb.text(-0.30, 1.10, "A", transform=ax_xy_nb.transAxes,
+ax_xy_nb.text(-0.18, 1.06, "A", transform=ax_xy_nb.transAxes,
               fontsize=11, fontweight="bold", va="bottom", ha="left")
-for ax_panel, label in zip([ax_b, ax_c, ax_d], ["B", "C", "D"]):
+for ax_panel, label in zip([ax_c, ax_d], ["B", "C"]):
     ax_panel.text(-0.13, 1.04, label, transform=ax_panel.transAxes,
                   fontsize=11, fontweight="bold", va="bottom", ha="left")
 
@@ -893,19 +1018,19 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig S4 -- Per-cell kernels for the selected topology (companion to Fig 3)
+# ## Fig S4 -- Per-cell kernels for the selected topology
 #
-# Per-cell ``f_xy(r)`` and ``f_xx(r)`` fits from the winning
-# ``poles_and_chroms_enveloped`` topology, one line per cell, overlaid
-# on the pooled bootstrap 5-95 % CI band.  Quantifies cell-to-cell
-# heterogeneity in the selected model and answers whether the pooled
-# kernel is driven by any single cell.
+# Per-cell ``f_xy(r)`` and short-range ``f_xx(r)`` fits from the
+# selected ``poles_and_chroms_enveloped`` topology, one line per
+# cell, overlaid on the pooled bootstrap 5-95 % CI band.  The xx
+# panel is truncated at the 1%-quantile of observed chrom-chrom
+# pair distances.
 
 # %%
 print("Fig S4: pooled fit + bootstrap...")
 config_s4 = make_traj_config("poles_and_chroms_enveloped")
 pooled_model = fit_model(cells, config_s4)
-boot = bootstrap_kernels(cells, config_s4, n_boot=200, rng=np.random.default_rng(42))
+boot = bootstrap_kernels(cells, config_s4, n_boot=100, rng=np.random.default_rng(42))
 
 print("Fig S4: per-cell fits...")
 percell_models = [fit_model([cell], config_s4) for cell in cells]
@@ -947,12 +1072,13 @@ ax.plot(r_xy_eval, median_xy, color="0.15", lw=1.6, ls="--",
 ax.plot(r_xy_eval, phi_xy @ pooled_model.theta_xy,
         color=OKABE_ITO["vermil"], lw=2.0, label="pooled fit")
 ax.axhline(0, color="0.5", lw=0.6, ls="--")
+ax.set_xlim(R_MIN, 12.0)
 ax.set_xlabel("Distance to partner (μm)")
 ax.set_ylabel("$f_{xy}(r)$  (μm/s) "
               "\n+ attractive · - repulsive")
 ax.set_title("Per-cell chromosome-to-partner kernel",
              loc="left", fontsize=8.5)
-ax.set_ylim(-0.10, 0.05)
+ax.set_ylim(-0.04, 0.04)
 ax.legend(loc="best", frameon=False, fontsize=6.5)
 
 ax = axes_s4[1]
@@ -962,13 +1088,16 @@ for curve in percell_xx_curves:
     ax.plot(r_xx_eval, curve, color="0.45", lw=0.7, alpha=0.55)
 ax.plot(r_xx_eval, median_xx, color="0.15", lw=1.6, ls="--",
         label="per-cell median")
-ax.plot(r_xx_eval, pooled_model.evaluate_kernel("xx", r_xx_eval),
+_pooled_xx_curve = pooled_model.evaluate_kernel("xx", r_xx_eval)
+ax.plot(r_xx_eval, _pooled_xx_curve,
         color=OKABE_ITO["vermil"], lw=2.0, label="pooled fit")
 ax.axhline(0, color="0.5", lw=0.6, ls="--")
+ax.set_xlim(R_XX_MIN_PLOT, r_xx_eval[-1])
+ax.set_ylim(-0.004, 0.001)
 ax.set_xlabel("Chromosome-chromosome distance (μm)")
 ax.set_ylabel("$f_{xx}(r)$  (μm/s) "
               "\n+ attractive · - repulsive")
-ax.set_title("Per-cell enveloped chromosome-chromosome kernel",
+ax.set_title("Per-cell short-range chromosome-chromosome kernel",
              loc="left", fontsize=8.5)
 ax.legend(loc="best", frameon=False, fontsize=6.5)
 
@@ -983,41 +1112,27 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig S5 -- Drift-vs-diffusion sensitivity (companion to Fig 4)
-#
-# Companion analysis for the main-text Fig 4B drift signal fraction
-# panel.  Three panels:
+# ## Fig S5 -- Drift-vs-diffusion sensitivity
 #
 # - **(A)** Sensitivity to the choice of accumulation timescale $T$.
-#   Curves of $f_{\mathrm{drift}}(d; T)$ for $T \in \{\mathrm{dt}, 50,
-#   T_{\mathrm{steady}} = 150, 300, T_{\mathrm{obs}} \approx 475\}$ s.
-#   $T_{\mathrm{steady}} = 150$ s is the main-panel anchor (docx Result 1
-#   steady-elongation phase); $T_{\mathrm{obs}}$ is the trimmed-window
-#   length, shown for context.  The monotone shape and spatial ordering
-#   are robust across $T$; the 50/50 crossover position shifts smoothly
-#   from outside the supported domain (small $T$) to small $d$ (large
-#   $T$).  Single-frame curves stay near zero across all $d$,
-#   consistent with one-step motion being noise-dominated even at large
-#   $d$ (panel B).
-# - **(B)** Per-step Peclet number
-#   $\mathrm{Pe}_{\Delta t}(d) = |F(d)|\sqrt{\Delta t / (2\,D(d))}$
-#   reported for transparency.  Per-step is well below the 1-D 50/50
-#   threshold $\mathrm{Pe} = 1$ everywhere, consistent with one-step
-#   motion being noise-dominated; the trajectory-scale story in Fig 4B
-#   is a multi-frame consequence (Frishman & Ronceray PRX 2020 capacity
-#   formalism).
+#   Curves of $f_{\mathrm{drift}}(d; T)$ for several $T$ values.
+#   The monotone shape and spatial ordering are robust across $T$;
+#   the 50/50 crossover position shifts smoothly with $T$.
+# - **(B)** Drift-vs-diffusion crossover length
+#   $L^{*}(d) = 2\,D(d)/|F(d)|$ (μm) — the length over which
+#   $|F|\,t$ equals $\sqrt{2 D t}$.  Above $L^{*}$ drift dominates,
+#   below it diffusion dominates.  Horizontal reference at the
+#   chromosome-spacing scale (~1 μm).
 # - **(C)** Local 50/50 timescale $\tau_{50}(d) = 2\,D(d)/|F(d)|^{2}$,
 #   the time at which drift-squared equals diffusive variance along
-#   the force direction.  Horizontal reference at the median
-#   $T_{\mathrm{obs}}$.  Where $\tau_{50}(d) < T_{\mathrm{obs}}$, drift
-#   wins over the window; where $\tau_{50}(d) > T_{\mathrm{obs}}$,
-#   noise wins.
+#   the force direction.  Horizontal reference at $T = 150$ s (the
+#   main-panel value).
 
 # %%
 print("Fig S5: drift-vs-diffusion sensitivity sweep...")
 from chromlearn.model_fitting.diffusion import (
     COORDINATE_MAPS as _COORD_MAPS,
-    _predicted_force as _pred_F,
+    _predicted_forces_all_t as _pred_F_all,
     estimate_diffusion_variable,
 )
 from chromlearn.model_fitting.basis import BSplineBasis as _BSplineBasis
@@ -1054,22 +1169,22 @@ EVAL_LO_S5, EVAL_HI_S5 = np.quantile(all_distances_s5, [0.01, 0.99])
 EVAL_LO_S5 = max(EVAL_LO_S5, R_MIN_D_S5)
 EVAL_HI_S5 = min(EVAL_HI_S5, R_MAX_D_S5)
 
-# Compute per-state F, D, d once
+# Compute per-state F, D, d once (batched per cell — same vectorization
+# as Fig 4 in 00_main_figure.py).
 fmag_chunks_s5, d_chunks_s5, D_chunks_s5 = [], [], []
 for cell in cells:
-    coord_arr = _coord_fn_s5(cell.chromosomes, cell)
-    T_frames = cell.chromosomes.shape[0]
-    for t in range(T_frames - 1):
-        F = _pred_F(cell, t, fit_result=model_s5,
-                    basis_xx=model_s5.basis_xx, basis_xy=model_s5.basis_xy,
-                    topology=model_s5.topology)
-        Fmag = np.linalg.norm(F, axis=1)
-        d_t = coord_arr[t]
-        valid = np.isfinite(Fmag) & np.isfinite(d_t)
-        if valid.any():
-            fmag_chunks_s5.append(Fmag[valid])
-            d_chunks_s5.append(d_t[valid])
-            D_chunks_s5.append(D_pooled_s5.evaluate(d_t[valid]))
+    coord_arr = _coord_fn_s5(cell.chromosomes, cell)  # (T, N)
+    F_all = _pred_F_all(cell, fit_result=model_s5,
+                         basis_xx=model_s5.basis_xx,
+                         basis_xy=model_s5.basis_xy,
+                         topology=model_s5.topology)  # (T-1, N, 3)
+    Fmag_all = np.linalg.norm(F_all, axis=2)  # (T-1, N)
+    d_all = coord_arr[: F_all.shape[0]]
+    valid = np.isfinite(Fmag_all) & np.isfinite(d_all)
+    if valid.any():
+        fmag_chunks_s5.append(Fmag_all[valid])
+        d_chunks_s5.append(d_all[valid])
+        D_chunks_s5.append(D_pooled_s5.evaluate(d_all[valid]))
 
 force_mags_s5 = np.concatenate(fmag_chunks_s5)
 d_force_s5 = np.concatenate(d_chunks_s5)
@@ -1113,12 +1228,14 @@ for T in T_SWEEP:
     med, _, _ = _binmedian_s5(fdrift, bin_idx_s5, N_BINS_S5)
     fdrift_curves_T[T] = med
 
-# Panel B: per-step Pe
-Pe_step_s5 = np.full_like(force_mags_s5, np.nan)
-Pe_step_s5[ok_s5] = (force_mags_s5[ok_s5]
-                     * np.sqrt(config_s5.dt
-                               / (2.0 * D_at_obs_s5[ok_s5])))
-pe_med_s5, pe_lo_s5, pe_hi_s5 = _binmedian_s5(Pe_step_s5, bin_idx_s5, N_BINS_S5)
+# Panel B: drift-vs-diffusion crossover length L*(d) = 2 D / |F|
+# (μm).  L* is the length over which |F|·t equals sqrt(2 D t); above
+# L*, drift wins; below L*, diffusion wins.
+Lstar_s5 = np.full_like(force_mags_s5, np.nan)
+Lstar_s5[ok_s5] = (2.0 * D_at_obs_s5[ok_s5]
+                   / np.maximum(force_mags_s5[ok_s5], 1e-18))
+Lstar_med, Lstar_lo, Lstar_hi = _binmedian_s5(Lstar_s5, bin_idx_s5, N_BINS_S5)
+CHROM_SPACING_REF = 1.0  # μm — chromosome spacing reference
 
 # Panel C: tau_50 = 2 D / |F|^2 (seconds)
 tau50 = np.full_like(force_mags_s5, np.nan)
@@ -1137,16 +1254,11 @@ norm_T = _mpl.colors.LogNorm(vmin=min(T_SWEEP), vmax=max(T_SWEEP))
 ax_a_s5 = axes_s5[0]
 for T in T_SWEEP:
     color = cmap_T(norm_T(T))
-    if abs(T - T_STEADY_S5) < 0.5:
-        label = rf"$T={T:.0f}$ s ($T_{{\mathrm{{steady}}}}$, main panel)"
-    elif abs(T - T_OBS_MED_S5) < 0.5:
-        label = rf"$T={T:.0f}$ s ($T_{{\mathrm{{obs}}}}$, trim window)"
-    else:
-        label = rf"$T={T:.0f}$ s"
+    label = rf"$T={T:.0f}$ s"
     ax_a_s5.plot(bin_centers_s5, fdrift_curves_T[T], "o-", color=color,
                  lw=1.4, markersize=3.5, label=label)
 ax_a_s5.axhline(0.5, color="0.5", lw=0.7, ls="--")
-ax_a_s5.set_xlim(EVAL_LO_S5, EVAL_HI_S5)
+ax_a_s5.set_xlim(float(bin_centers_s5[0]), float(bin_centers_s5[-1]))
 ax_a_s5.set_ylim(0.0, 1.0)
 ax_a_s5.set_xlabel("Distance from spindle center, $d$ (μm)")
 ax_a_s5.set_ylabel(r"$f_{\mathrm{drift}}(d;\,T)$")
@@ -1154,20 +1266,20 @@ ax_a_s5.set_title("Sensitivity to observation timescale $T$",
                    loc="left", fontsize=8.5)
 ax_a_s5.legend(loc="best", frameon=False, fontsize=6.0)
 
-# (B) Per-step Pe
+# (B) Drift-vs-diffusion crossover length L*(d) = 2D/|F|
 ax_b_s5 = axes_s5[1]
-ax_b_s5.fill_between(bin_centers_s5, pe_lo_s5, pe_hi_s5,
+ax_b_s5.fill_between(bin_centers_s5, Lstar_lo, Lstar_hi,
                       color=OKABE_ITO["blue"], alpha=0.18, linewidth=0,
                       label="IQR")
-ax_b_s5.plot(bin_centers_s5, pe_med_s5, "o-", color=OKABE_ITO["blue"],
+ax_b_s5.plot(bin_centers_s5, Lstar_med, "o-", color=OKABE_ITO["blue"],
               lw=1.4, markersize=3.5, label="median")
-ax_b_s5.axhline(1.0, color="0.5", lw=0.7, ls="--",
-                 label=r"$\mathrm{Pe} = 1$ (1-D 50/50)")
-ax_b_s5.set_xlim(EVAL_LO_S5, EVAL_HI_S5)
+ax_b_s5.axhline(CHROM_SPACING_REF, color="0.5", lw=0.7, ls="--",
+                 label=rf"chrom spacing $\sim {CHROM_SPACING_REF:.0f}\,\mu$m")
+ax_b_s5.set_xlim(float(bin_centers_s5[0]), float(bin_centers_s5[-1]))
 ax_b_s5.set_ylim(bottom=0.0)
 ax_b_s5.set_xlabel("Distance from spindle center, $d$ (μm)")
-ax_b_s5.set_ylabel(r"$\mathrm{Pe}_{\Delta t}(d) = |F|\sqrt{\Delta t/(2D)}$")
-ax_b_s5.set_title("Per-step Peclet number (transparency)",
+ax_b_s5.set_ylabel(r"$L^{*}(d) = 2D/|F|$ (μm)")
+ax_b_s5.set_title("Drift-vs-diffusion crossover length",
                    loc="left", fontsize=8.5)
 ax_b_s5.legend(loc="best", frameon=False, fontsize=6.5)
 
@@ -1179,12 +1291,8 @@ ax_c_s5.fill_between(bin_centers_s5, tau_lo, tau_hi,
 ax_c_s5.plot(bin_centers_s5, tau_med, "o-", color=OKABE_ITO["green"],
               lw=1.4, markersize=3.5, label="median")
 ax_c_s5.axhline(T_STEADY_S5, color="0.5", lw=0.7, ls="--",
-                 label=rf"$T_{{\mathrm{{steady}}}}={T_STEADY_S5:.0f}$ s "
-                        "(main panel)")
-ax_c_s5.axhline(T_OBS_MED_S5, color="0.7", lw=0.5, ls=":",
-                 label=rf"$T_{{\mathrm{{obs}}}}\approx{T_OBS_MED_S5:.0f}$ s "
-                        "(trim window)")
-ax_c_s5.set_xlim(EVAL_LO_S5, EVAL_HI_S5)
+                 label=rf"$T={T_STEADY_S5:.0f}$ s")
+ax_c_s5.set_xlim(float(bin_centers_s5[0]), float(bin_centers_s5[-1]))
 ax_c_s5.set_yscale("log")
 ax_c_s5.set_xlabel("Distance from spindle center, $d$ (μm)")
 ax_c_s5.set_ylabel(r"$\tau_{50}(d) = 2D/|F|^{2}$ (s)")

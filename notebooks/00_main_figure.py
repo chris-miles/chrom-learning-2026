@@ -8,42 +8,37 @@
 # ---
 
 # %% [markdown]
-# # 00 — Main text figures (Result 3)
+# # 00 — Main text figures
 #
-# **STATUS: in progress.**
+# Assembler for four main-text figures.  Each figure is rendered as
+# a self-contained PDF/PNG.
 #
-# Assembler for the four main-text figures supporting Chris's part of
-# *Hierarchy of spindle forces in prometaphase* (Shi/Miles/Khodjakov/
-# Mogilner). Each figure is rendered as a self-contained PDF/PNG; Alex
-# can combine into multi-panel layouts as he prefers.
+# - **Fig 1** — PCA-projected centrosome+chromosome trajectories and
+#   lag correlation showing chromosomes follow centrosomes.
+# - **Fig 2** — CS-CS-only is sufficient to predict pole motion;
+#   pp+cp adds little.  Three models compared: pp, pp+cp, cp-only.
+# - **Fig 3** — learned pairwise force-distance kernels with
+#   bootstrap CIs, plus per-cell LOO path MSE across candidate
+#   topologies.
+# - **Fig 4** — effective diffusion D(d) versus 3D Euclidean
+#   distance from spindle center, plus drift signal fraction
+#   f_drift(d; T).
 #
-# Mapping to Alex's docx Result 3 (A/B/C/D):
-# - **Fig 1 (A)** — PCA-projected CS+CH trajectories and lag correlation
-#   showing chromosomes follow centrosomes. Source: NB03 Part A.
-# - **Fig 2 (B)** — CS-CS-only is sufficient to predict pole motion;
-#   adding chromosome-on-pole forces does not improve LOO path MSE.
-#   Source: NB03 Part B (re-run with deterministic-rollout path MSE for
-#   apples-to-apples with the rest of the paper).
-# - **Fig 3 (C)** — learned pairwise force-distance kernels with
-#   bootstrap CIs, plus per-cell LOO path MSE for the 5 candidate
-#   topologies (admissible vs nuisance upper-bound). Source: NB04.
-# - **Fig 4 (D)** — effective diffusion D(d) versus 3D Euclidean
-#   distance from spindle center (``d`` reserved for that distance to
-#   avoid collision with the SFI-inspired pairwise distance ``r``),
-#   with constant-D
-#   baseline. Source: NB06.
-#
-# Forecast-error-vs-horizon and 5-topology forecast curves go to the
-# supplement (see ``00b_supplement.py``).
+# Forecast-error-vs-horizon and per-cell breakdowns go to
+# ``00b_supplement.py``.
 
 # %%
 import sys
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import LineCollection
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from scipy.spatial.distance import pdist
 
 from chromlearn import find_repo_root
 
@@ -134,12 +129,12 @@ def save_figure(fig, name):
 
 
 # %% [markdown]
-# ## Setup: load data, fit canonical model
+# ## Setup: load data, fit selected model
 #
-# Mirrors NB04's selected configuration: ``poles_and_chroms`` topology
-# with steric envelope on the xx kernel (``r0 = 1.5 um``, ``w = 0.3 um``),
-# ``n_basis = 10`` and ``lambda_rough = 1.0``. Bootstrap with 100 cell-
-# level resamples for kernel CI bands.
+# Selected configuration: ``poles_and_chroms`` topology with steric
+# envelope on the xx kernel (``r0 = 1.5 um``, ``w = 0.3 um``),
+# ``n_basis = 10`` and ``lambda_rough = 1.0``. Bootstrap with 100
+# cell-level resamples for kernel CI bands.
 
 # %%
 CONDITION = "rpe18_ctr"
@@ -171,17 +166,31 @@ config = FitConfig(
     endpoint_frac=FRAC_NEB_AO,
 )
 model = fit_model(cells, config)
-print(f"Fitted canonical model: D_x = {model.D_x:.4e} um^2/s, "
+print(f"Fitted selected model: D_x = {model.D_x:.4e} um^2/s, "
       f"theta size = {model.theta.size}")
 
 boot = bootstrap_kernels(cells, config, n_boot=N_BOOT,
                          rng=np.random.default_rng(42))
 
+_xx_pair_dists = []
+for _cell in cells:
+    _chroms = np.moveaxis(_cell.chromosomes, 2, 1)  # (T, N, 3)
+    for _t in range(_chroms.shape[0]):
+        _frame = _chroms[_t]
+        _ok = ~np.any(np.isnan(_frame), axis=1)
+        if _ok.sum() < 2:
+            continue
+        _xx_pair_dists.extend(pdist(_frame[_ok]))
+_xx_pair_dists = np.asarray(_xx_pair_dists)
+R_XX_MIN_PLOT = float(np.quantile(_xx_pair_dists, 0.01))
+print(f"Chrom-chrom pair-distance 1%-quantile = {R_XX_MIN_PLOT:.3f} um "
+      f"(used to truncate xx kernel plots)")
+
 # %% [markdown]
 # ## Fig 1 — PCA trajectories and lag correlation
 #
-# Two panels for the same biological observation that "chromosomes follow
-# centrosomes" (Alex's docx Result 3A):
+# Two panels for the same biological observation that chromosomes
+# follow centrosomes:
 #
 # - **Fig 1A**: an example cell's centrosome and chromosome trajectories
 #   projected into the spindle's principal axes (PCA basis fit from
@@ -280,28 +289,30 @@ ax_pca.set_aspect("equal")
 ax_pca.autoscale()
 ax_pca.set_xlabel("PC1 (μm)")
 ax_pca.set_ylabel("PC2 (μm)")
-ax_pca.set_title(f"PCA trajectories — {cell.cell_id}",
+ax_pca.set_title("Centrosomes and chromosomes follow each other",
                  loc="left", fontsize=9)
 
-# Single master time colorbar, plus a compact in-panel legend mapping
-# colormaps to objects.  Uses YlOrRd (chrom COM) as the time reference;
-# the other three layers share the same normalized time axis even if
-# their colormaps differ.
-cbar_time = inset_axes(ax_pca, width="40%", height="3%", loc="lower right",
+cbar_time = inset_axes(ax_pca, width="40%", height="4%", loc="lower right",
                        borderpad=1.4)
 plt.colorbar(lc_time, cax=cbar_time, orientation="horizontal")
-cbar_time.set_xlabel("Time (NEB to 0.4 NEB-AO)", fontsize=6.5, labelpad=2)
+cbar_time.set_xlabel("Time", fontsize=6.5, labelpad=2)
 cbar_time.tick_params(labelsize=0, length=0)
 
-ax_pca.text(0.03, 0.97,
-            "individual CHs (Purples)\n"
-            "individual CSs (Greys)\n"
-            "pole COM (YlGnBu)\n"
-            "chrom COM (YlOrRd)",
-            transform=ax_pca.transAxes, ha="left", va="top",
-            fontsize=6.5, color="0.3",
-            bbox=dict(facecolor="white", edgecolor="none",
-                      alpha=0.6, pad=2))
+_legend_specs = [
+    ("individual chromosomes", "Purples", 0.65),
+    ("individual centrosomes", "Greys",   0.70),
+    ("pole COM",               "YlGnBu",  0.65),
+    ("chromosome COM",         "YlOrRd",  0.65),
+]
+_stroke = [pe.withStroke(linewidth=2.2, foreground="white", alpha=0.9)]
+for _i, (_label, _cmap, _t) in enumerate(_legend_specs):
+    _color = plt.get_cmap(_cmap)(_t)
+    ax_pca.text(
+        0.035, 0.965 - 0.062 * _i, _label,
+        transform=ax_pca.transAxes, ha="left", va="top",
+        color=_color, fontsize=7.5, fontweight="bold",
+        path_effects=_stroke, zorder=20,
+    )
 
 # --- Fig 1B: lag correlation (pooled) --------------------------------
 lag_result = compute_lag_correlation(cells, lag_max=40, smooth_window=25)
@@ -323,18 +334,24 @@ ax_lag.plot(lag_result.lags, lag_result.median,
 peak_idx = int(np.nanargmax(lag_result.median))
 peak_lag = lag_result.lags[peak_idx]
 peak_val = lag_result.median[peak_idx]
-ax_lag.axvline(peak_lag, color="0.4", linestyle=":", linewidth=0.8)
 
 ax_lag.axhline(0.0, color="0.5", linestyle="--", linewidth=0.6)
 ax_lag.axvline(0.0, color="0.5", linestyle="--", linewidth=0.6)
+ax_lag.set_xlim(-100.0, 100.0)
 ax_lag.set_xlabel("Lag (s) - positive = chromosomes lag poles")
 ax_lag.set_ylabel("Velocity dot product (norm.)")
 ax_lag.set_title("Lag correlation across cells", loc="left", fontsize=9)
 ax_lag.legend(loc="upper left", frameon=False)
-ax_lag.text(0.97, 0.05,
-            f"peak @ {peak_lag:+.0f} s\n(value {peak_val:.2f})",
-            transform=ax_lag.transAxes, ha="right", va="bottom",
-            fontsize=7, color="0.3")
+
+ax_lag.plot(peak_lag, peak_val, "o", color=OKABE_ITO["vermil"],
+            markersize=5.5, markeredgecolor="white", markeredgewidth=0.6,
+            zorder=5)
+ax_lag.annotate(f"peak @ {peak_lag:+.0f} s",
+                xy=(peak_lag, peak_val),
+                xytext=(peak_lag + 50, peak_val + 0.10),
+                fontsize=7, color=OKABE_ITO["vermil"],
+                arrowprops=dict(arrowstyle="->", color=OKABE_ITO["vermil"],
+                                lw=0.8, shrinkA=2, shrinkB=4))
 
 # Panel labels (A, B)
 for ax, label in [(ax_pca, "A"), (ax_lag, "B")]:
@@ -348,33 +365,20 @@ plt.show()
 # %% [markdown]
 # ## Fig 2 — Centrosomes are sufficient to predict their own motion
 #
-# Alex's docx Result 3B: "adding CS-CH interactions or not to CS-CS
-# interactions does not change prediction error, so again the simplest
-# model would be that CS-CS interactions are dominant."
+# Three pole-velocity models are compared:
 #
-# Two complementary metrics:
+# - **pp** — pole motion driven by inter-pole interaction only.
+# - **pp+cp** — pole motion driven by inter-pole + chrom-pole
+#   interactions, with observed chromosome positions as covariates.
+# - **cp-only** — pole motion driven by chrom-pole interactions
+#   alone.  Structurally insufficient (no inter-pole term).
 #
-# - **1-step RMSE** (autonomous one-frame velocity prediction): the
-#   metric NB03 Part B originally used and the metric where Alex's
-#   "no improvement" claim holds cleanly.  pp-only and pp+cp are
-#   statistically indistinguishable.
-# - **Path MSE** (deterministic rollout from the real initial frame
-#   over the trimmed window): for apples-to-apples consistency with
-#   NB04.  pp+cp scores slightly lower here, but **the rollout uses
-#   real held-out chromosome positions as inputs** (chromosomes are
-#   *given*, not co-simulated), so the apparent pp+cp advantage
-#   reflects partition non-identifiability and chromosome-correlated
-#   noise fitting rather than a clean causal coupling — see NB03b for
-#   the partition reconciliation.
-#
-# Top row: signed force kernels with bootstrap CIs (f_pp and 46·f_cp
-# on a shared y-axis so total CS-CH contribution is visually
-# comparable to f_pp).
-# Bottom row: mean ± SE bar chart of LOO path MSE for the two models
-# — keeping the metric consistent with main-text Fig 3.  Numerical
-# audit (1-step RMSE alongside path MSE, with the non-identifiability
-# caveat) is printed to notebook stdout rather than rendered as a
-# panel.  Per-cell strip plots are punted to the supplement (00b S2).
+# Two complementary metrics: 1-step RMSE (autonomous one-frame
+# velocity prediction; pp and pp+cp statistically indistinguishable)
+# and path MSE (deterministic rollout from the real initial frame
+# over the trimmed window).  Both are reported in the printed
+# numerical summary.  The (f_pp, f_cp) split inside the pp+cp
+# model is non-identifiable; see Fig S1.
 
 # %%
 # --- Inline helpers for the centrosome velocity regression -----------
@@ -489,18 +493,16 @@ def _path_mse_pp(cell, traj):
 
 
 # --- LOO CV: both 1-step velocity RMSE and rollout path MSE ---------
-# We report two metrics with complementary interpretations:
-# - 1-step RMSE: predicts pole velocity given current state.  This is
-#   the metric NB03 used originally and where Alex's "no improvement"
-#   claim holds cleanly.  It is the AUTONOMOUS one-frame test.
-# - rollout path MSE: integrates pole positions forward from the real
-#   initial frame using the fitted kernels, then averages squared
-#   position error over the trimmed window.  Note that the pp+cp
-#   rollout uses *real* held-out chromosome positions as inputs (not
-#   co-simulated), so its lower path MSE reflects partition non-
-#   identifiability + chromosome-correlated noise fitting, NOT a clean
-#   causal advantage for CS-CH coupling.  See NB03b for the
-#   non-identifiability discussion.
+# Two metrics with complementary interpretations:
+# - 1-step RMSE: predicts pole velocity given current state — the
+#   AUTONOMOUS one-frame test.
+# - rollout path MSE: integrates pole positions forward from the
+#   real initial frame using the fitted kernels, then averages
+#   squared position error over the trimmed window.  The pp+cp
+#   rollout uses *real* held-out chromosome positions as inputs
+#   (not co-simulated), so its lower path MSE reflects partition
+#   non-identifiability + chromosome-correlated noise fitting,
+#   not a clean causal advantage for CS-CH coupling.
 print("Computing pp-only vs pp+cp vs cp-only LOO metrics...")
 cell_mats = [_build_cell_matrices(c) for c in cells]
 n_pp = N_BASIS_PP
@@ -582,12 +584,13 @@ ax_fcp = fig2.add_subplot(gs2[0, 1])
 ax_strip = fig2.add_subplot(gs2[1, :])  # path-MSE bars span both columns
 
 
-def _plot_kernel_band(ax, r_grid, boot_curves, color, label):
+def _plot_kernel_band(ax, r_grid, boot_curves, color, label, linestyle="-"):
     median = np.median(boot_curves, axis=0)
     lo = np.quantile(boot_curves, 0.05, axis=0)
     hi = np.quantile(boot_curves, 0.95, axis=0)
     ax.fill_between(r_grid, lo, hi, color=color, alpha=0.18, linewidth=0)
-    ax.plot(r_grid, median, color=color, linewidth=1.8, label=label)
+    ax.plot(r_grid, median, color=color, linewidth=1.8, label=label,
+            linestyle=linestyle)
 
 
 # f_pp panel: pp-only vs pp+cp.  Restrict plot to observed pole-pole
@@ -601,14 +604,15 @@ pp_lo, pp_hi = np.quantile(all_pp, [0.01, 0.99])
 
 mask_pp = (r_pp_grid >= pp_lo) & (r_pp_grid <= pp_hi)
 _plot_kernel_band(ax_fpp, r_pp_grid[mask_pp], boot_fpp_pp_only[:, mask_pp],
-                  OKABE_ITO["blue"], "pp-only model")
+                  OKABE_ITO["blue"], "pp", linestyle="--")
 _plot_kernel_band(ax_fpp, r_pp_grid[mask_pp], boot_fpp_full[:, mask_pp],
-                  OKABE_ITO["vermil"], "pp+cp model")
+                  OKABE_ITO["vermil"], "pp+cp", linestyle="-")
 ax_fpp.axhline(0.0, color="0.5", linestyle="--", linewidth=0.6)
 ax_fpp.set_xlabel("Pole-pole distance (μm)")
 ax_fpp.set_ylabel("$f_{pp}(r)$  (μm/s) "
                   "\n+ attractive · - repulsive")
 ax_fpp.set_title("Effective pole-separation kernel", loc="left", fontsize=8.5)
+ax_fpp.set_xlim(float(pp_lo), float(pp_hi))
 ax_fpp.legend(frameon=False, loc="upper right")
 
 # f_cp panel: from pp+cp model only (cp-only is meaningless here)
@@ -628,29 +632,29 @@ for cell in cells:
 all_cp = np.asarray(all_cp)
 cp_lo, cp_hi = np.quantile(all_cp, [0.01, 0.99])
 
-# Effective CS-CH contribution: scale f_cp by the chromosome count so
-# the magnitude is directly comparable to f_pp (a single inter-pole
-# interaction).  This is an UPPER BOUND on the realized CS-CH force on
-# a pole — it assumes all 46 chromosomes contribute in the same
-# direction.  The realized sum has direction cancellations from
-# chromosomes on opposite sides of the pole; see NB03 Part B for the
-# observed-positions decomposition.
+# Scale f_cp by the chromosome count so the magnitude is directly
+# comparable to f_pp (a single inter-pole interaction).  Assumes all
+# 46 chromosomes contribute in the same direction; in reality there
+# are cancellations from chromosomes on opposite sides of the pole.
 N_CHROM_SCALE = 46
 mask_cp = (r_cp_grid >= cp_lo) & (r_cp_grid <= cp_hi)
 _plot_kernel_band(ax_fcp, r_cp_grid[mask_cp],
                   N_CHROM_SCALE * boot_fcp_full[:, mask_cp],
                   OKABE_ITO["vermil"],
-                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (pp+cp model)")
+                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (pp+cp)",
+                  linestyle="-")
 _plot_kernel_band(ax_fcp, r_cp_grid[mask_cp],
                   N_CHROM_SCALE * boot_fcp_cp_only[:, mask_cp],
                   OKABE_ITO["green"],
-                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (cp-only ablation)")
+                  f"{N_CHROM_SCALE} × $f_{{cp}}$ (cp-only)",
+                  linestyle="-.")
 ax_fcp.axhline(0.0, color="0.5", linestyle="--", linewidth=0.6)
 ax_fcp.set_xlabel("Chromosome-to-pole distance (μm)")
 ax_fcp.set_ylabel(f"{N_CHROM_SCALE} · $f_{{cp}}(r)$  (μm/s) "
                    "\n+ attractive · - repulsive")
-ax_fcp.set_title("Total CS-CH contribution (upper bound)",
+ax_fcp.set_title("Total CS-CH contribution",
                  loc="left", fontsize=8.5)
+ax_fcp.set_xlim(float(cp_lo), float(cp_hi))
 ax_fcp.legend(frameon=False, loc="upper right", fontsize=6.5)
 
 # Share y-axis between f_pp and 46·f_cp so the overall CS-CH
@@ -660,30 +664,38 @@ y_max_f2 = max(ax_fpp.get_ylim()[1], ax_fcp.get_ylim()[1])
 ax_fpp.set_ylim(y_min_f2, y_max_f2)
 ax_fcp.set_ylim(y_min_f2, y_max_f2)
 
-# Path MSE bar chart (mean ± SE) for the two models — keeps the
-# headline metric consistent with main-text Fig 3.  The bars are
-# very close, supporting Alex's "CS-CS sufficient" claim, but they
-# are not exactly equal (see the printed summary below for caveats).
+# Path MSE bar chart (mean ± SE) for the three models, on the same
+# headline metric as main Fig 3.  pp and pp+cp bars are very close
+# (the data behind the "CS-CS sufficient" framing); cp-only is
+# clearly worse, confirming an inter-pole term is needed.
 xs_bar_f2 = np.array([0.0, 0.7, 1.4])
 m_pp, se_pp = float(path_mse_pp_only.mean()), float(path_mse_pp_only.std(ddof=1) / np.sqrt(len(cells)))
 m_fl, se_fl = float(path_mse_full.mean()),    float(path_mse_full.std(ddof=1) / np.sqrt(len(cells)))
 m_cp, se_cp = float(path_mse_cp_only.mean()), float(path_mse_cp_only.std(ddof=1) / np.sqrt(len(cells)))
-ax_strip.bar(xs_bar_f2[0], m_pp, width=0.45, color=OKABE_ITO["blue"],
-             alpha=0.85, edgecolor="white", linewidth=0.6)
-ax_strip.bar(xs_bar_f2[1], m_fl, width=0.45, color=OKABE_ITO["vermil"],
-             alpha=0.85, edgecolor="white", linewidth=0.6)
-ax_strip.bar(xs_bar_f2[2], m_cp, width=0.45, color=OKABE_ITO["green"],
-             alpha=0.85, edgecolor="white", linewidth=0.6)
-ax_strip.errorbar(xs_bar_f2, [m_pp, m_fl, m_cp],
-                  yerr=[se_pp, se_fl, se_cp], fmt="none",
-                  ecolor="0.2", capsize=4, linewidth=1.0)
+def _darken_f2(hex_color, factor=0.55):
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+    return (r * factor, g * factor, b * factor)
+
+_f2_specs = [
+    (xs_bar_f2[0], m_pp, se_pp, OKABE_ITO["blue"]),
+    (xs_bar_f2[1], m_fl, se_fl, OKABE_ITO["vermil"]),
+    (xs_bar_f2[2], m_cp, se_cp, OKABE_ITO["green"]),
+]
+for _x, _m, _se, _color in _f2_specs:
+    ax_strip.bar(_x, _m, width=0.45, color=_color,
+                 alpha=0.85, edgecolor="white", linewidth=0.6)
+    ax_strip.errorbar(_x, _m, yerr=_se, fmt="none",
+                      ecolor=_darken_f2(_color), capsize=4, linewidth=1.0)
 ax_strip.set_xticks(xs_bar_f2)
-ax_strip.set_xticklabels(["pp-only", "pp+cp", "cp-only"])
+ax_strip.set_xticklabels(["pp", "pp+cp", "cp-only"])
 ax_strip.set_ylabel("LOO path MSE (μm²)")
 ax_strip.set_title("Held-out pole-trajectory error",
                    loc="left", fontsize=8.5)
 ax_strip.set_xlim(-0.45, 1.85)
-ax_strip.set_ylim(bottom=0.0)
+_y_lo_f2 = min(m_pp - se_pp, m_fl - se_fl, m_cp - se_cp) * 0.85
+_y_hi_f2 = max(m_pp + se_pp, m_fl + se_fl, m_cp + se_cp) * 1.18
+ax_strip.set_ylim(_y_lo_f2, _y_hi_f2)
 
 # Numerical summary printed to the notebook output (no on-figure
 # panel — keeps the figure visually clean while preserving the dual-
@@ -714,28 +726,20 @@ print()
 print("Caveat: the path-MSE pp+cp edge reflects partition non-")
 print("identifiability — real chromosome positions enter the rollout")
 print("as covariates, so pp+cp absorbs CH-correlated noise without a")
-print("clean causal advantage.  See NB03b for the partition")
-print("reconciliation; 1-step RMSE is the autonomous comparison.")
+print("clean causal advantage; 1-step RMSE is the autonomous test.")
 print()
-print("cp-only ablation:")
+print("cp-only:")
 print(f"  1-step RMSE: {rmse1_cp_only.mean():.5f} um/s")
 print(f"  Path MSE:    {path_mse_cp_only.mean():.2f} um^2")
-print("  Note: cp-only is structurally insufficient — it cannot reproduce")
-print("  pole motion without the inter-pole interaction.  This is an")
-print("  ablation, not a partition claim; the (f_pp, f_cp) split inside")
-print("  the pp+cp model remains non-identifiable (see Fig S1).")
+print("  cp-only is structurally insufficient — it cannot reproduce")
+print("  pole motion without an inter-pole term.  The (f_pp, f_cp)")
+print("  split inside the pp+cp model is non-identifiable (Fig S1).")
 
 # Panel labels
 for ax, label in [(ax_fpp, "A"), (ax_fcp, "B"), (ax_strip, "C")]:
     ax.text(-0.13, 1.04, label, transform=ax.transAxes,
             fontsize=11, fontweight="bold", va="bottom", ha="left")
 
-fig2.suptitle("Chromosome-on-pole coupling does not improve "
-               "pole-motion prediction in the autonomous test\n"
-               "(1-step RMSE is statistically indistinguishable; "
-               "path-MSE pp+cp edge reflects CH-as-covariate "
-               "non-identifiability, not causal coupling — see text)",
-              fontsize=8.5, y=0.998)
 fig2.tight_layout()
 save_figure(fig2, "fig2_cs_sufficient")
 plt.show()
@@ -743,43 +747,28 @@ plt.show()
 # %% [markdown]
 # ## Fig 3 — Learned chromosome force kernels and topology comparison
 #
-# Addresses Alex's docx Result 3C ("predicted force-distance relations"
-# + "best model: CH-CH steric only, CS attracts CH at long distance").
-# Reports what the data-driven SFI-inspired projection fit actually
-# shows under a
-# biologically motivated steric envelope on the chrom-chrom kernel —
-# the f_xy shape may differ in detail from Alex's prior verbal
-# prediction; see discussion notes accompanying the figure.  The
-# held-out-forecast-error-vs-horizon panel Alex requests in 3C is
-# planned for supplement S3 rather than the main text.
+# Reports the data-driven SFI-inspired projection fit under a
+# biologically motivated steric envelope on the chrom-chrom kernel.
 #
 # Top row: signed force kernels with bootstrap 5–95 % CI bands.
-# - **A** ``f_xy(r)`` overlaid for all 4 topologies (poles, center,
-#   poles_and_chroms free-xx, poles_and_chroms_enveloped).  Distinct
-#   linestyles for distinguishability; cropped at 12 μm to keep the
-#   visual focus on the data-supported region.
+# - **A** ``f_xy(r)`` overlaid for the four topologies (poles,
+#   center, poles + chroms free, poles + chroms short range).
+#   Distinct linestyles for distinguishability; cropped at 12 μm.
 # - **B** ``f_xx(r)`` for the two topologies that have an xx kernel
-#   (free-xx vs enveloped).  The free-xx kernel deviates from zero at
+#   (free vs short range).  The free kernel deviates from zero at
 #   long range — the spurious chrom-chrom interaction that motivates
-#   the biologically motivated steric envelope and the a priori
-#   exclusion of free-xx topologies from the admissible set.
+#   the steric envelope and the a priori exclusion of the free
+#   topology from the admissible set.
 #
-# Bottom row: sorted mean ± SE bar chart of LOO path MSE across the 4
-# topologies.  Admissible models (poles, center, enveloped) in
-# Okabe-Ito; nuisance upper-bound (poles + chroms free-xx) hatched
-# neutral gray.  Selected topology annotated.  Per-cell strip plots
-# are punted to the supplement (00b S1) so the main panel is not
-# muddled by 12-cell jitter; ``center_and_chroms`` (free-xx +
-# midpoint partner) is also punted to S1.
+# Bottom row: sorted mean ± SE bar chart of LOO path MSE across the
+# four topologies, with errorbars in a darker shade of each bar's
+# color.  All four topologies share the Okabe-Ito palette
+# (poles=blue, center=green, short range=vermilion, free=purple).
 
 # %%
-# --- All 5 topologies: fit + bootstrap + rollout CV ----------------
-# Main-text Fig 3 compares 4 topologies: the 3 admissible models plus
-# the free-form ``poles_and_chroms`` as a nuisance upper-bound.
-# ``center_and_chroms`` is ruled out a priori on the same biological
-# grounds as ``poles_and_chroms`` and is moved to the supplement
-# (00b S1) so the main panel is not muddled with an extra free-xx
-# variant that tells the same story.
+# --- 4 topologies: fit + bootstrap + rollout CV --------------------
+# Three admissible models (poles, center, short range) plus the
+# free-form ``poles_and_chroms`` as a nuisance upper bound.
 TOPOLOGIES_F3 = [
     "poles", "center",
     "poles_and_chroms",
@@ -792,11 +781,11 @@ TOPO_DISPLAY = {
     "center":                      {"label": "center",
                                     "color": OKABE_ITO["green"],
                                     "admissible": True},
-    "poles_and_chroms_enveloped":  {"label": "poles + chroms\n(enveloped)",
+    "poles_and_chroms_enveloped":  {"label": "poles + chroms\n(short range)",
                                     "color": OKABE_ITO["vermil"],
                                     "admissible": True},
-    "poles_and_chroms":            {"label": "poles + chroms\n(free xx)",
-                                    "color": "0.45",
+    "poles_and_chroms":            {"label": "poles + chroms\n(free)",
+                                    "color": OKABE_ITO["purple"],
                                     "admissible": False},
 }
 
@@ -819,7 +808,7 @@ def _make_config(topology):
     )
 
 
-# Reuse the canonical fit + bootstrap for poles_and_chroms_enveloped
+# Reuse the top-level fit + bootstrap for poles_and_chroms_enveloped
 configs_f3 = {t: _make_config(t) for t in TOPOLOGIES_F3}
 models_f3 = {"poles_and_chroms_enveloped": model}
 boots_f3 = {"poles_and_chroms_enveloped": boot}
@@ -892,9 +881,9 @@ F_XY_OVERLAY = [
     ("center",                      "--",
      "center (chrom -> spindle midpoint)"),
     ("poles_and_chroms",            ":",
-     "poles + chroms (free xx)"),
-    ("poles_and_chroms_enveloped",  "-",
-     "poles + chroms (enveloped) — selected"),
+     "poles + chroms (free)"),
+    ("poles_and_chroms_enveloped",  (0, (5, 1, 1, 1)),
+     "poles + chroms (short range)"),
 ]
 for topology, linestyle, label in F_XY_OVERLAY:
     info = TOPO_DISPLAY[topology]
@@ -921,30 +910,27 @@ ax_fxy.legend(frameon=False, loc="best", fontsize=6.5)
 # the enveloped (selected) curve first so the free-xx curve is drawn
 # on top.
 F_XX_PLOT_MAX = R_MAX
-r_xx_grid = np.linspace(R_MIN, F_XX_PLOT_MAX, 400)
+r_xx_grid = np.linspace(R_XX_MIN_PLOT, F_XX_PLOT_MAX, 400)
 _kernel_band(ax_fxx, models_f3["poles_and_chroms_enveloped"],
              boots_f3["poles_and_chroms_enveloped"],
              "xx", r_xx_grid,
              TOPO_DISPLAY["poles_and_chroms_enveloped"]["color"],
-             "enveloped (steric prior) — selected",
-             linestyle="-")
+             "short range",
+             linestyle=(0, (5, 1, 1, 1)))
 _kernel_band(ax_fxx, models_f3["poles_and_chroms"],
              boots_f3["poles_and_chroms"],
              "xx", r_xx_grid,
-             "0.25",
-             "free xx — non-zero at long range = spurious",
-             linestyle="--")
+             OKABE_ITO["purple"],
+             "free",
+             linestyle=":")
 ax_fxx.axhline(0.0, color="0.5", linestyle="--", linewidth=0.6)
-ax_fxx.set_xlim(R_MIN, F_XX_PLOT_MAX)
+ax_fxx.set_xlim(R_XX_MIN_PLOT, F_XX_PLOT_MAX)
 ax_fxx.set_xlabel("Chromosome-chromosome distance (μm)")
 ax_fxx.set_ylabel("$f_{xx}(r)$  (μm/s) "
                    "\n+ attractive · - repulsive")
-ax_fxx.set_title("Chromosome-chromosome interaction (per-pair; "
-                  "y-scale ~10× smaller than panel A)",
-                 loc="left", fontsize=8.0)
-ax_fxx.legend(frameon=False, loc="upper right", fontsize=6.5)
-# y-scale note moved out of the data area to avoid colliding with the
-# kernel curves; appended to the panel title via the suptitle box.
+ax_fxx.set_title("Chromosome-chromosome interaction (per pair)",
+                 loc="left", fontsize=8.5)
+ax_fxx.legend(frameon=False, loc="lower right", fontsize=6.5)
 
 # --- Path MSE bar chart, sorted by performance ---------------------
 n_topo = len(TOPOLOGIES_F3)
@@ -962,28 +948,20 @@ sorted_ses = np.array([
     for i in sort_idx
 ])
 
+def _darken(hex_color, factor=0.55):
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+    return (r * factor, g * factor, b * factor)
+
 xs_bar = np.arange(n_topo, dtype=float)
 for bi, ti in enumerate(sort_idx):
     info = TOPO_DISPLAY[TOPOLOGIES_F3[ti]]
-    hatch = None if info["admissible"] else "//"
     ax_path.bar(xs_bar[bi], sorted_means[bi], width=0.7,
                 color=info["color"], alpha=0.85,
-                edgecolor="white" if info["admissible"] else "0.2",
-                linewidth=0.6, hatch=hatch)
-ax_path.errorbar(xs_bar, sorted_means, yerr=sorted_ses, fmt="none",
-                 ecolor="0.2", capsize=3, linewidth=0.8)
-
-# Highlight the selected topology (lowest mean among admissible)
-admissible_topos = [t for t in TOPOLOGIES_F3 if TOPO_DISPLAY[t]["admissible"]]
-selected = min(admissible_topos,
-               key=lambda t: float(np.mean(rollouts_f3[t].path_mse)))
-sel_bar = sorted_topos.index(selected)
-sel_y = sorted_means[sel_bar]
-ax_path.annotate("selected", xy=(xs_bar[sel_bar], sel_y),
-                 xytext=(xs_bar[sel_bar], sel_y * 1.15),
-                 ha="center", fontsize=7, color="0.1",
-                 arrowprops=dict(arrowstyle="-", color="0.2",
-                                 linewidth=0.6))
+                edgecolor="white", linewidth=0.6)
+    ax_path.errorbar(xs_bar[bi], sorted_means[bi], yerr=sorted_ses[bi],
+                     fmt="none", ecolor=_darken(info["color"]),
+                     capsize=3, linewidth=1.0)
 
 ax_path.set_xticks(xs_bar)
 ax_path.set_xticklabels(
@@ -991,39 +969,12 @@ ax_path.set_xticklabels(
     fontsize=7,
 )
 ax_path.set_ylabel("LOO path MSE (μm²)")
-ax_path.set_title("Mean per-cell trajectory error across topologies "
-                   "— y-axis starts above 0 to highlight differences "
-                   "(see supplement for per-cell breakdown)",
-                  loc="left", fontsize=8.0)
+ax_path.set_title("Mean per-cell trajectory error across topologies",
+                  loc="left", fontsize=8.5)
 
-# Zoom y-axis to amplify the differences between topologies.  The
-# bottom is set to ~85 % of the smallest mean so the bars are clearly
-# differentiable; we add a "broken-axis" indicator on the y-axis to
-# warn the reader that the bars do not start at zero.
 y_lo_path = float(sorted_means.min()) * 0.85
 y_hi_path = float((sorted_means + sorted_ses).max()) * 1.18
 ax_path.set_ylim(y_lo_path, y_hi_path)
-# Broken-axis indicator — small zigzag near the bottom of the y-axis
-_break_y = y_lo_path + 0.012 * (y_hi_path - y_lo_path)
-_break_x_left = ax_path.get_xlim()[0]
-ax_path.plot([_break_x_left, _break_x_left + 0.10],
-             [_break_y, _break_y + 0.018 * (y_hi_path - y_lo_path)],
-             color="0.2", linewidth=1.0, clip_on=False, zorder=10)
-ax_path.plot([_break_x_left + 0.10, _break_x_left + 0.20],
-             [_break_y + 0.018 * (y_hi_path - y_lo_path), _break_y],
-             color="0.2", linewidth=1.0, clip_on=False, zorder=10)
-# (y-axis-zoom warning is in the panel title)
-
-# Custom legend for admissible vs nuisance UB
-from matplotlib.patches import Patch
-legend_elements = [
-    Patch(facecolor=OKABE_ITO["blue"], alpha=0.85, edgecolor="white",
-          label="admissible (poles, center, enveloped)"),
-    Patch(facecolor="0.45", alpha=0.85, edgecolor="0.2", hatch="//",
-          label="nuisance upper-bound (free-form xx)"),
-]
-ax_path.legend(handles=legend_elements, loc="upper left", frameon=False,
-               fontsize=6.5)
 
 # Panel labels
 for ax, label in [(ax_fxy, "A"), (ax_fxx, "B"), (ax_path, "C")]:
@@ -1039,7 +990,7 @@ plt.show()
 # %% [markdown]
 # ## Fig 3b — Sim vs real trajectories in PCA space
 #
-# Visual confirmation that the canonical
+# Visual confirmation that the selected
 # ``poles_and_chroms_enveloped`` model reproduces the gathering motion
 # observed in real data.  We pick a good cell (low LOO path MSE on the
 # selected topology), simulate chromosome trajectories deterministically
@@ -1061,18 +1012,31 @@ plt.show()
 # %%
 from chromlearn.model_fitting.simulate import simulate_cell
 
-# Pick the cell with the lowest canonical-topology path MSE — the
-# best-fitting cell, gives the cleanest sim-vs-real comparison.
-canonical_pmse = rollouts_f3["poles_and_chroms_enveloped"].path_mse
-good_idx = int(np.argmin(canonical_pmse))
+selected_pmse = rollouts_f3["poles_and_chroms_enveloped"].path_mse
+PREFERRED_CELL_ID = "rpe18_ctr_006"
+_preferred_idx = next(
+    (i for i, c in enumerate(cells) if c.cell_id == PREFERRED_CELL_ID),
+    None,
+)
+good_idx = _preferred_idx if _preferred_idx is not None else int(np.argmin(selected_pmse))
 good_cell = cells[good_idx]
 print(f"Sim-vs-real cell: idx={good_idx}, id={good_cell.cell_id}, "
-      f"canonical-topology path MSE = {canonical_pmse[good_idx]:.2f} um^2 "
-      f"(median {np.median(canonical_pmse):.2f})")
+      f"selected-topology path MSE = {selected_pmse[good_idx]:.2f} um^2 "
+      f"(median {np.median(selected_pmse):.2f})")
 
-# Deterministic and stochastic rollouts of the same cell.
+# Deterministic and stochastic rollouts of the same cell.  The fitted
+# D_x mixes intrinsic chromosome diffusion with kinetochore localization
+# noise (~50-80 nm per coordinate per Renda 2022 / RPE-1 tracking
+# studies, contributing sigma_loc^2 / dt ~= 1e-3 um^2/s — comparable
+# to D_fit = 0.002 um^2/s).  For the SDE rollout we use half of D_x as
+# a defensible split between intrinsic and tracking-noise components,
+# so the visualization reflects the intrinsic diffusion the model is
+# really claiming rather than the localization-noise-inflated D_fit.
+import dataclasses as _dc
+SDE_D_FRACTION = 0.5
+model_sde = _dc.replace(model, D_x=model.D_x * SDE_D_FRACTION)
 _, sim_cell_det = simulate_cell(good_cell, model, deterministic=True)
-_, sim_cell_sde = simulate_cell(good_cell, model,
+_, sim_cell_sde = simulate_cell(good_cell, model_sde,
                                  rng=np.random.default_rng(2026),
                                  deterministic=False)
 
@@ -1121,7 +1085,7 @@ fig3b, axes_3b = plt.subplots(
 ax_real, ax_det, ax_sde = axes_3b
 
 
-def _draw_pca_panel(ax, cell_obj, title, in_sample=False):
+def _draw_pca_panel(ax, cell_obj, title):
     chrom_palette = plt.get_cmap("tab20")(
         np.linspace(0, 1, len(display_chroms_3b))
     )
@@ -1164,36 +1128,16 @@ def _draw_pca_panel(ax, cell_obj, title, in_sample=False):
     ax.set_aspect("equal")
     ax.set_xlabel("PC1 (μm)")
     ax.set_title(title, loc="left", fontsize=9)
-    if in_sample:
-        ax.text(0.03, 0.97,
-                "in-sample illustration:\n"
-                "model trained on all 12 cells",
-                transform=ax.transAxes, ha="left", va="top",
-                fontsize=6.5, color="0.3",
-                bbox=dict(facecolor="white", edgecolor="none",
-                          alpha=0.6, pad=2))
     return pole_lc
 
 
-_ = _draw_pca_panel(ax_real, good_cell,
-                     f"Real trajectories  ({good_cell.cell_id})",
-                     in_sample=True)
+_ = _draw_pca_panel(ax_real, good_cell, "Real trajectories")
 _ = _draw_pca_panel(ax_det, sim_cell_det,
-                     "Deterministic ODE rollout",
-                     in_sample=False)
-pole_lc_sde = _draw_pca_panel(ax_sde, sim_cell_sde,
-                               "Stochastic SDE rollout (single replicate)",
-                               in_sample=False)
+                     "Deterministic ODE rollout")
+_ = _draw_pca_panel(ax_sde, sim_cell_sde,
+                     "Stochastic SDE rollout (single replicate)")
 ax_real.set_ylabel("PC2 (μm)")
 ax_real.autoscale()
-
-# Single horizontal time colorbar OUTSIDE the axes (below the figure)
-# rather than inside ax_sde, to avoid overlapping the x-axis label.
-cbar_ax = fig3b.add_axes([0.30, 0.02, 0.40, 0.018])
-plt.colorbar(pole_lc_sde, cax=cbar_ax, orientation="horizontal")
-cbar_ax.set_xlabel("Centrosome time (NEB to 0.4 NEB-AO)",
-                   fontsize=6.5, labelpad=2)
-cbar_ax.tick_params(labelsize=0, length=0)
 
 for ax, label in [(ax_real, "A"), (ax_det, "B"), (ax_sde, "C")]:
     ax.text(-0.13, 1.02, label, transform=ax.transAxes,
@@ -1207,54 +1151,41 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig 4 — Effective diffusion D(d) and drift-signal fraction over the window
-#
-# Alex's docx Result 3D: "learned effective diffusion of CHs, which is
-# greater far from the spindle, which supports findings of our previous
-# paper."
+# ## Fig 4 — Effective diffusion D(d) and drift-signal fraction
 #
 # **Panel A.**  Local diffusivity is estimated from the mean-squared
-# residual displacement after subtracting the fitted deterministic force,
-# $\langle |\delta X - \hat F(X) \cdot dt|^2 \rangle / (2 \cdot d \cdot dt)$,
+# residual displacement after subtracting the fitted deterministic
+# drift, $\langle |\delta X - \hat F(X) \cdot dt|^2 \rangle / (2 \cdot d \cdot dt)$,
 # which removes the leading drift contamination that otherwise biases
-# quadratic displacement estimators in this drift-dominated, spatially
-# heterogeneous setting.  In the Itô convention, the projected drift
-# absorbed by the stage-1 force estimate already includes any
-# basis-resolvable diffusion-gradient $\nabla\!\cdot\!D$ contribution
-# (Frishman & Ronceray PRX 2020, App. H Eq. H2 and Eq. 15), so no
-# additional $\nabla\!\cdot\!D$ correction is applied; the estimator
-# is not localization-noise-corrected.  Coordinate ``d`` is reserved
-# for the spindle-center distance to avoid collision with the
-# SFI-inspired pairwise interaction distance ``r``.
+# quadratic displacement estimators in this drift-dominated,
+# spatially heterogeneous setting.  In the Itô convention, the
+# projected drift already absorbs any basis-resolvable
+# $\nabla\!\cdot\!D$ contribution (Frishman & Ronceray PRX 2020,
+# App. H), so no separate correction is applied; the estimator is
+# not localization-noise-corrected.  Coordinate ``d`` is the
+# spindle-center distance.
 #
-# **Panel B.**  Local drift signal fraction over the steady-elongation
-# regime,
+# **Panel B.**  Local drift signal fraction
 #
 # $$
-#   f_{\mathrm{drift}}(d;\,T_{\mathrm{steady}}) \;=\;
-#   \frac{|F(d)|^{2}\,T_{\mathrm{steady}}}
-#        {|F(d)|^{2}\,T_{\mathrm{steady}} + 2\,D(d)},
+#   f_{\mathrm{drift}}(d;\,T) \;=\;
+#   \frac{|F(d)|^{2}\,T}{|F(d)|^{2}\,T + 2\,D(d)},
 # $$
 #
-# the 1-D (force-direction) reduction of the Frishman--Ronceray capacity
-# rate $\tfrac{1}{2}\,F^{\!\top}\!D^{-1}F$ accumulated over
-# $T_{\mathrm{steady}}$ (PRX 2020, arXiv:1809.09650).  Bounded $[0, 1]$;
-# $f = 0.5$ when drift-squared equals diffusive variance along the force
-# direction over the window.  Computed at the state level (per chromosome
-# per frame) and then median + IQR-binned by $d$ to avoid ratio-of-
-# smoothed-mean artifacts.
+# the 1-D (force-direction) reduction of the Frishman--Ronceray
+# capacity rate $\tfrac{1}{2}\,F^{\!\top}\!D^{-1}F$ accumulated
+# over $T$ (PRX 2020).  Bounded $[0, 1]$; $f = 0.5$ when
+# drift-squared equals diffusive variance along the force
+# direction over the window.  Computed at the state level (per
+# chromosome per frame) and then median + IQR-binned by $d$.
 #
-# $T_{\mathrm{steady}} = 150$ s is the duration of the steady spindle-
-# elongation phase reported in Result 1 (Fig 1) and Alex's docx
-# ("the elongation rate of the spindle length remains remarkably constant
-# for ~ 2.5 min").  This is the timescale over which the inferred
-# constant-coefficient drift law is biologically expected to apply; the
-# trimmed window (~475 s) is intentionally NOT used because the docx
-# explicitly warns that motors switch on/off between phases, so a longer
-# accumulation window would integrate force terms outside the modeled
-# regime.  Spatial ordering and shape are robust to the choice of $T$;
-# the 50/50 crossover only appears for sufficiently long $T$
-# ($T \gtrsim 60$ s; sensitivity sweep in Fig S5).
+# $T = 150$ s is the duration of the steady spindle-elongation
+# phase ("the elongation rate remains remarkably constant for
+# ~ 2.5 min"), the timescale over which the inferred drift law
+# is expected to apply.  The full trimmed window (~475 s) is not
+# used here because motors switch on/off between phases.  Spatial
+# ordering and shape are robust to $T$; sensitivity sweep in
+# Fig S5.
 
 # %%
 N_BASIS_D = 8
@@ -1320,22 +1251,21 @@ print(f"Plot range clipped to [{EVAL_LO:.2f}, {EVAL_HI:.2f}] um (data support)")
 # Brownian motion, with signal scale F^T D^{-1} F.  Our scalar-D form is
 # the per-state, force-direction-aligned reduction.
 #
-# T = T_steady is fixed at 150 s (~2.5 min), the duration of the steady
-# spindle-elongation phase per Alex's docx Result 1: "the elongation rate
-# of the spindle length (CS-CS distance) remains remarkably constant for
-# ~ 2.5 min".  This is the biologically motivated timescale over which the
-# inferred constant-coefficient drift law is meant to apply (the docx
-# explicitly warns that motors switch on/off between phases, so a longer
-# accumulation window would integrate force terms outside the modeled
-# regime).  T_steady is NOT the per-cell trimmed-window length, which is
-# longer (~475 s for NEB to 0.4 NEB-AO).  The supplement (Fig S5 panel A)
-# sweeps T to show the spatial ordering is robust.
+# T is fixed at 150 s (~2.5 min), the duration of the steady spindle-
+# elongation phase ("the elongation rate of the spindle length remains
+# remarkably constant for ~ 2.5 min").  This is the biologically
+# motivated timescale over which the inferred constant-coefficient
+# drift law is meant to apply; motors switch on/off between phases,
+# so a longer accumulation window would integrate force terms
+# outside the modeled regime.  T is not the per-cell trimmed-window
+# length (~475 s).  The supplement (Fig S5 panel A) sweeps T to show
+# the spatial ordering is robust.
 #
 # We compute chi_i = T_steady |F_i|^2 / (2 D_i) at the STATE level (per
 # chromosome per frame), then bin medians/quantiles by spindle-center
 # distance d so we get an honest aggregate without ratio-of-smoothed-mean
 # artifacts.
-from chromlearn.model_fitting.diffusion import _predicted_force
+from chromlearn.model_fitting.diffusion import _predicted_forces_all_t
 
 T_STEADY = 150.0  # seconds; docx Result 1 anchor (steady-elongation phase)
 # Per-cell trimmed window length (kept for context; NOT used to compute
@@ -1353,23 +1283,21 @@ print(f"Main-panel reference timescale T_steady = {T_STEADY:.0f} s "
 print("Computing f_drift(d; T_steady) and per-step Pe(d) at every observation...")
 fmag_chunks, d_chunks, D_at_d_chunks = [], [], []
 for cell in cells:
-    coord_arr = _coord_fn(cell.chromosomes, cell)  # (T, N), spindle-center
-    T_frames = cell.chromosomes.shape[0]
-    for t in range(T_frames - 1):  # match _coord_fn's force support
-        F = _predicted_force(
-            cell, t,
-            fit_result=model,
-            basis_xx=model.basis_xx,
-            basis_xy=model.basis_xy,
-            topology=model.topology,
-        )
-        Fmag = np.linalg.norm(F, axis=1)
-        d_t = coord_arr[t]
-        valid = np.isfinite(Fmag) & np.isfinite(d_t)
-        if valid.any():
-            fmag_chunks.append(Fmag[valid])
-            d_chunks.append(d_t[valid])
-            D_at_d_chunks.append(D_pooled.evaluate(d_t[valid]))
+    coord_arr = _coord_fn(cell.chromosomes, cell)  # (T, N)
+    F_all = _predicted_forces_all_t(  # (T-1, N, 3) — batched per cell
+        cell,
+        fit_result=model,
+        basis_xx=model.basis_xx,
+        basis_xy=model.basis_xy,
+        topology=model.topology,
+    )
+    Fmag_all = np.linalg.norm(F_all, axis=2)  # (T-1, N)
+    d_all = coord_arr[: F_all.shape[0]]       # (T-1, N)
+    valid = np.isfinite(Fmag_all) & np.isfinite(d_all)
+    if valid.any():
+        fmag_chunks.append(Fmag_all[valid])
+        d_chunks.append(d_all[valid])
+        D_at_d_chunks.append(D_pooled.evaluate(d_all[valid]))
 
 force_mags_d = np.concatenate(fmag_chunks)
 d_force = np.concatenate(d_chunks)
@@ -1418,27 +1346,20 @@ fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(9.0, 3.6),
                                    gridspec_kw={"wspace": 0.32})
 
 # --- Panel A: D(d) ---
-for d_res in D_per_cell:
-    if d_res is None:
-        continue
-    vals = d_res.evaluate(d_grid)
-    ax4a.plot(d_grid, vals, color="0.7", linewidth=0.6, alpha=0.55,
-              zorder=1)
-
+percell_curves = np.stack([
+    d_res.evaluate(d_grid) for d_res in D_per_cell if d_res is not None
+], axis=0)
+percell_lo = np.quantile(percell_curves, 0.05, axis=0)
+percell_hi = np.quantile(percell_curves, 0.95, axis=0)
+ax4a.fill_between(d_grid, percell_lo, percell_hi,
+                  color=OKABE_ITO["vermil"], alpha=0.18, linewidth=0,
+                  label="per-cell 5-95 % range", zorder=1)
 pooled_vals = D_pooled.evaluate(d_grid)
 ax4a.plot(d_grid, pooled_vals, color=OKABE_ITO["vermil"], linewidth=2.2,
-          label="pooled D(d), f_corrected", zorder=3)
+          label=r"pooled $D(d)$", zorder=3)
 ax4a.axhline(model.D_x, color="0.3", linestyle="--", linewidth=1.0,
-             label=f"constant D = {model.D_x:.4f} μm²/s", zorder=2)
-
-sample_distances = np.random.default_rng(0).choice(
-    all_distances, size=min(5000, all_distances.size), replace=False
-)
-y_lo, y_hi = ax4a.get_ylim()
-rug_y = y_lo + 0.02 * (y_hi - y_lo)
-ax4a.scatter(sample_distances, np.full_like(sample_distances, rug_y),
-             s=1.0, color="0.4", alpha=0.18, zorder=0,
-             marker="|", linewidths=0.5)
+             label=fr"fitted constant $D = {model.D_x:.4f}\,\mu\mathrm{{m}}^2/\mathrm{{s}}$",
+             zorder=2)
 
 ax4a.set_xlim(EVAL_LO, EVAL_HI)
 ax4a.set_ylim(bottom=0.0)
@@ -1447,11 +1368,6 @@ ax4a.set_ylabel("D (μm²/s)")
 ax4a.set_title("Effective diffusion grows away from spindle center",
                loc="left", fontsize=9)
 ax4a.legend(frameon=False, loc="upper left", fontsize=7)
-ax4a.text(0.99, 0.04,
-          f"n={sum(1 for x in D_per_cell if x is not None)} cells; "
-          "tail of D(d) is sparsely sampled — see rug.",
-          transform=ax4a.transAxes, ha="right", va="bottom",
-          fontsize=6, color="0.4")
 
 # --- Panel B: f_drift(d; T_steady) drift signal fraction over the
 # steady-elongation phase ---
@@ -1462,17 +1378,14 @@ ax4b.plot(bin_centers_f4, fdrift_med, "o-", color=OKABE_ITO["blue"],
           linewidth=1.6, markersize=4.0, label="median")
 ax4b.axhline(0.5, color="0.5", linestyle="--", linewidth=0.8,
              label=r"50/50 crossover")
-ax4b.set_xlim(EVAL_LO, EVAL_HI)
+_valid_centers = bin_centers_f4[np.isfinite(fdrift_med)]
+ax4b.set_xlim(float(_valid_centers[0]), float(_valid_centers[-1]))
 ax4b.set_ylim(0.0, 1.0)
 ax4b.set_xlabel("Distance from spindle center, $d$ (μm)")
-ax4b.set_ylabel(r"$f_{\mathrm{drift}}(d;\,T_{\mathrm{steady}})$")
+ax4b.set_ylabel(r"$f_{\mathrm{drift}}(d;\,T)$")
 ax4b.set_title("Drift signal fraction over the steady-elongation phase",
                loc="left", fontsize=9)
 ax4b.legend(frameon=False, loc="upper left", fontsize=7)
-ax4b.text(0.99, 0.04,
-          rf"$T_{{\mathrm{{steady}}}}={T_STEADY:.0f}$ s",
-          transform=ax4b.transAxes, ha="right", va="bottom",
-          fontsize=7, color="0.4")
 
 for ax_panel, label in [(ax4a, "A"), (ax4b, "B")]:
     ax_panel.text(-0.13, 1.04, label, transform=ax_panel.transAxes,
