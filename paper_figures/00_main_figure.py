@@ -269,11 +269,18 @@ ax_pca.set_ylabel("PC2 (μm)")
 ax_pca.set_title("Centrosomes and chromosomes follow each other",
                  loc="left", fontsize=9)
 
+# Neutral grey time gradient (decoupled from any single track's colormap).
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize as _Normalize
+
 cbar_time = inset_axes(ax_pca, width="40%", height="4%", loc="lower right",
-                       borderpad=1.4)
-plt.colorbar(lc_time, cax=cbar_time, orientation="horizontal")
+                       borderpad=2.6)
+_time_sm = ScalarMappable(norm=_Normalize(0.0, 1.0), cmap="Greys")
+_time_sm.set_array([])
+plt.colorbar(_time_sm, cax=cbar_time, orientation="horizontal")
 cbar_time.set_xlabel("Time", fontsize=6.5, labelpad=2)
-cbar_time.tick_params(labelsize=0, length=0)
+cbar_time.set_xticks([])
+cbar_time.tick_params(length=0)
 
 _legend_specs = [
     ("individual chromosomes", "Purples", 0.65),

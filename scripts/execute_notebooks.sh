@@ -17,50 +17,47 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
-render_one() {
-    local pyfile="$1"
+render_dir() {
+    # Render every .py in $1 into $2; if $3 == yes, also export code-free
+    # HTML alongside the .ipynb.  Filter by prefix match in $4 (optional).
+    local srcdir="$1"
     local outdir="$2"
     local export_html="$3"
-    local basename
-    basename=$(basename "$pyfile" .py)
-    local ipynb="${outdir}/${basename}.ipynb"
-    local html="${outdir}/${basename}.html"
+    local prefix="$4"
 
     mkdir -p "$outdir"
-    echo "Executing $pyfile ..."
-    python -m jupytext --to notebook --execute "$pyfile" -o "$ipynb"
-    echo "  Done: $ipynb"
+    cd "$srcdir"
 
-    if [ "$export_html" = "yes" ]; then
-        echo "  Exporting $html (no code cells) ..."
-        python -m jupyter nbconvert --to html --no-input \
-            --output "${basename}.html" --output-dir "$outdir" "$ipynb"
-    fi
+    local pyfile
+    for pyfile in *.py; do
+        [ -e "$pyfile" ] || continue
+        local basename="${pyfile%.py}"
+        if [ -n "$prefix" ]; then
+            case "$basename" in
+                ${prefix}*|0${prefix}*) ;;
+                *) continue ;;
+            esac
+        fi
+        local ipynb="${outdir}/${basename}.ipynb"
+        local html="${outdir}/${basename}.html"
+
+        echo "Executing $srcdir/$pyfile ..."
+        python -m jupytext --to notebook --execute "$pyfile" -o "$ipynb"
+        echo "  Done: $ipynb"
+
+        if [ "$export_html" = "yes" ]; then
+            echo "  Exporting $html (no code cells) ..."
+            python -m jupyter nbconvert --to html --no-input \
+                --output "${basename}.html" --output-dir "$outdir" "$ipynb"
+        fi
+    done
+
+    cd "$REPO_ROOT"
 }
 
-# Collect candidate files
-paper_files=$(ls "$REPO_ROOT"/paper_figures/*.py 2>/dev/null || true)
-explore_files=$(ls "$REPO_ROOT"/exploratory_notebooks/*.py 2>/dev/null || true)
-
-if [ -n "$1" ]; then
-    # Filter by prefix match against the basename
-    paper_match=$(echo "$paper_files" | grep -E "/0?${1}[^/]*\.py$" || true)
-    explore_match=$(echo "$explore_files" | grep -E "/0?${1}[^/]*\.py$" || true)
-    paper_files="$paper_match"
-    explore_files="$explore_match"
-    if [ -z "$paper_files" ] && [ -z "$explore_files" ]; then
-        echo "No notebook matching '$1' found."
-        exit 1
-    fi
-fi
-
-for pyfile in $paper_files; do
-    render_one "$pyfile" "$REPO_ROOT/paper_figures/rendered" yes
-done
-
-for pyfile in $explore_files; do
-    render_one "$pyfile" "$REPO_ROOT/exploratory_notebooks/ipynb" no
-done
+prefix_arg="${1:-}"
+render_dir "$REPO_ROOT/paper_figures" "$REPO_ROOT/paper_figures/rendered" yes "$prefix_arg"
+render_dir "$REPO_ROOT/exploratory_notebooks" "$REPO_ROOT/exploratory_notebooks/ipynb" no "$prefix_arg"
 
 echo ""
 echo "To commit the updated outputs:"
