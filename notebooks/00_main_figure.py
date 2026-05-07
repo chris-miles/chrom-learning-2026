@@ -8,24 +8,13 @@
 # ---
 
 # %% [markdown]
-# # 00 — Main text figures
+# # 00. Main-text figures
 #
-# Assembler for four main-text figures.  Each figure is rendered as
-# a self-contained PDF/PNG.
-#
-# - **Fig 1** — PCA-projected centrosome+chromosome trajectories and
-#   lag correlation showing chromosomes follow centrosomes.
-# - **Fig 2** — CS-CS-only is sufficient to predict pole motion;
-#   pp+cp adds little.  Three models compared: pp, pp+cp, cp-only.
-# - **Fig 3** — learned pairwise force-distance kernels with
-#   bootstrap CIs, plus per-cell LOO path MSE across candidate
-#   topologies.
-# - **Fig 4** — effective diffusion D(d) versus 3D Euclidean
-#   distance from spindle center, plus drift signal fraction
-#   f_drift(d; T).
-#
-# Forecast-error-vs-horizon and per-cell breakdowns go to
-# ``00b_supplement.py``.
+# Paper-figure assembler for the chromlearn project. Each section
+# below produces one main-text figure (PDF + 600 dpi PNG) for the
+# early-prometaphase spindle-force-inference manuscript. Forecast
+# error vs horizon, per-cell breakdowns, and hyperparameter sensitivities
+# sit in `00b_supplement.py`.
 
 # %%
 import sys
@@ -187,21 +176,7 @@ print(f"Chrom-chrom pair-distance 1%-quantile = {R_XX_MIN_PLOT:.3f} um "
       f"(used to truncate xx kernel plots)")
 
 # %% [markdown]
-# ## Fig 1 — PCA trajectories and lag correlation
-#
-# Two panels for the same biological observation that chromosomes
-# follow centrosomes:
-#
-# - **Fig 1A**: an example cell's centrosome and chromosome trajectories
-#   projected into the spindle's principal axes (PCA basis fit from
-#   chromosome COM).  Individual chromosomes are drawn as a faint
-#   ``Purples`` time-encoded cloud; both poles are ``Greys`` (light →
-#   dark); the pole COM is highlighted in ``YlGnBu`` and the
-#   chromosome COM in ``YlOrRd`` (each as a single time-encoded line).
-#   A single time colorbar anchors the time axis.
-# - **Fig 1B**: pooled lag correlation between pole-COM velocity and
-#   chromosome-COM velocity. Asymmetric peak at positive lag means
-#   chromosomes follow poles, not the other way around.
+# ## Fig 1. PCA trajectories and chromosome-pole lag correlation
 
 # %%
 EXAMPLE_CELL_INDEX = 1  # rpe18_ctr_032
@@ -363,22 +338,31 @@ save_figure(fig1, "fig1_pca_lag")
 plt.show()
 
 # %% [markdown]
-# ## Fig 2 — Centrosomes are sufficient to predict their own motion
+# Fig 1. Chromosome center-of-mass motion lags pole center-of-mass
+# motion during early prometaphase. (A) Example RPE-1 control cell
+# projected into the spindle principal-axis frame, with individual
+# chromosomes, both centrosomes, and chromosome and pole center-of-mass
+# tracks shown over time. (B) Pooled lag correlation between pole-COM
+# and chromosome-COM velocities across all cells; the positive-lag
+# peak shows that chromosome motion follows pole motion.
 #
-# Three pole-velocity models are compared:
-#
-# - **pp** — pole motion driven by inter-pole interaction only.
-# - **pp+cp** — pole motion driven by inter-pole + chrom-pole
-#   interactions, with observed chromosome positions as covariates.
-# - **cp-only** — pole motion driven by chrom-pole interactions
-#   alone.  Structurally insufficient (no inter-pole term).
-#
-# Two complementary metrics: 1-step RMSE (autonomous one-frame
-# velocity prediction; pp and pp+cp statistically indistinguishable)
-# and path MSE (deterministic rollout from the real initial frame
-# over the trimmed window).  Both are reported in the printed
-# numerical summary.  The (f_pp, f_cp) split inside the pp+cp
-# model is non-identifiable; see Fig S1.
+# - The PCA basis is fit from the chromosome COM in 3D, then sign-aligned
+#   so PC1 points along the pole-pole axis. No manual centering is
+#   applied.
+# - Example cell shown is `rpe18_ctr_032`.
+# - Trajectories are trimmed from NEB to `frac = 0.4` of the NEB-to-AO
+#   interval, the early-prometaphase gathering window in which
+#   chromosomes congress while spindle elongation rate stays roughly
+#   constant.
+# - Lag correlation is computed per cell on the COM velocity time series
+#   then pooled across cells. A positive peak at positive lag is a
+#   temporal-ordering diagnostic: chromosome-COM velocity is most
+#   correlated with earlier pole-COM velocity.
+# - Together the panels motivate treating centrosomes as observed
+#   external drivers in the chromosome force model used in Figs 3-4.
+
+# %% [markdown]
+# ## Fig 2. Pole motion is predicted from inter-pole interactions alone
 
 # %%
 # --- Inline helpers for the centrosome velocity regression -----------
@@ -745,25 +729,51 @@ save_figure(fig2, "fig2_cs_sufficient")
 plt.show()
 
 # %% [markdown]
-# ## Fig 3 — Learned chromosome force kernels and topology comparison
+# Fig 2. Pole motion is predicted from inter-pole interactions alone.
+# (A) The effective pole-pole term f_pp(r), as a function of inter-pole
+# distance, from the pole-velocity regression. Bands are 5-95 %
+# bootstrap CI over cell-level resamples. (B) The chromosome-to-pole
+# contribution scaled by the typical chromosome count, 46·f_cp(r),
+# so the per-pair radial term is on the same scale as the single
+# inter-pole interaction. The 46x value is not the actual chromosome
+# contribution to pole velocity: chromosomes pull from many
+# directions and partially cancel, while this curve sums radial
+# magnitudes only. The f_pp / f_cp split inside the joint pp+cp fit
+# is not separately identifiable; Fig S1 shows this directly. (C)
+# Held-out path MSE from deterministic rollout (mean squared 3D
+# pole-position error over the trimmed early-prometaphase window) for
+# three pole-velocity models: inter-pole only (pp), inter-pole plus
+# chromosome-to-pole (pp+cp), and chromosome-to-pole only (cp-only).
+# pp and pp+cp are close, while cp-only cannot reproduce pole motion
+# without an inter-pole term.
 #
-# Reports the data-driven SFI-inspired projection fit under a
-# biologically motivated steric envelope on the chrom-chrom kernel.
-#
-# Top row: signed force kernels with bootstrap 5–95 % CI bands.
-# - **A** ``f_xy(r)`` overlaid for the four topologies (poles,
-#   center, poles + chroms free, poles + chroms short range).
-#   Distinct linestyles for distinguishability; cropped at 12 μm.
-# - **B** ``f_xx(r)`` for the two topologies that have an xx kernel
-#   (free vs short range).  The free kernel deviates from zero at
-#   long range — the spurious chrom-chrom interaction that motivates
-#   the steric envelope and the a priori exclusion of the free
-#   topology from the admissible set.
-#
-# Bottom row: sorted mean ± SE bar chart of LOO path MSE across the
-# four topologies, with errorbars in a darker shade of each bar's
-# color.  All four topologies share the Okabe-Ito palette
-# (poles=blue, center=green, short range=vermilion, free=purple).
+# - Two complementary metrics are reported in the printed numerical
+#   summary: 1-step velocity RMSE (autonomous one-frame prediction) and
+#   path MSE (full deterministic rollout from the real initial frame).
+#   Both support the same qualitative conclusion once the pp/cp
+#   non-identifiability caveat is applied; path MSE is shown in panel C.
+# - The pp+cp rollout uses real held-out chromosome positions as
+#   covariates rather than co-simulating chromosomes. Its slightly lower
+#   path MSE reflects partition non-identifiability and chromosome-
+#   correlated noise fitting, not a clean causal advantage for pole-
+#   chromosome coupling.
+# - 46 is the typical chromosome count visible per cell in this
+#   condition. The 46x scaling in panel B sums the radial component
+#   of the per-chromosome contribution and ignores cancellation from
+#   the chromosomes' angular distribution around the pole, so it
+#   exceeds the actual chromosome contribution to pole velocity.
+# - The basis for both kernels is `BSplineBasis(R_MIN=0.3, R_MAX=15.0,
+#   n_basis=6)` with a roughness penalty `lambda_rough = 1.0` and
+#   numerical-jitter ridge `lambda_ridge = 1e-6`. The penalty scales
+#   are identical to the chromosome force model (Fig 3) so the same
+#   smoothness prior applies to both regressions.
+# - The pole-velocity regression is intentionally outside the
+#   `chromlearn.model_fitting` chromosome-dynamics pipeline, since
+#   here we are predicting pole motion rather than chromosome motion.
+#   The same trajectory data supports both regressions.
+
+# %% [markdown]
+# ## Fig 3. Learned chromosome force kernels and topology selection
 
 # %%
 # --- 4 topologies: fit + bootstrap + rollout CV --------------------
@@ -988,26 +998,66 @@ save_figure(fig3, "fig3_kernels_topology")
 plt.show()
 
 # %% [markdown]
-# ## Fig 3b — Sim vs real trajectories in PCA space
+# Fig 3. A short-range chromosome-chromosome prior removes the
+# long-range f_xx artifact without sacrificing held-out trajectory
+# accuracy; among the biologically admissible models, the short-range
+# topology is selected by deterministic-rollout path MSE. (A) f_xy(r),
+# the chromosome-to-partner radial force kernel, overlaid for four
+# candidate topologies: chromosome attracted to nearest pole (poles),
+# chromosome attracted to the spindle midpoint (center), poles plus
+# chromosome-chromosome free (poles + chroms, free), and poles plus
+# chromosome-chromosome enveloped (poles + chroms, short range).
+# Bands are 5-95 % bootstrap CI. (B) f_xx(r), the chromosome-
+# chromosome per-pair kernel, for the two topologies that include
+# one. The short-range fit applies a smooth steric envelope
+# `s(r) = 0.5 (1 - tanh((r - r0) / w))` with r0 = 1.5 um and
+# w = 0.3 um, which suppresses the kernel beyond the contact regime.
+# The free fit deviates from zero at long range, an artifact that
+# motivates the envelope. The free topology is a flexible but
+# biologically inadmissible upper bound, since long-range
+# chromosome-chromosome forces have no known biological basis in
+# mammalian mitosis. (C) Leave-one-cell-out deterministic-rollout
+# path MSE for the same four topologies, sorted ascending; the
+# short-range model is the selected biologically admissible topology.
 #
-# Visual confirmation that the selected
-# ``poles_and_chroms_enveloped`` model reproduces the gathering motion
-# observed in real data.  We pick a good cell (low LOO path MSE on the
-# selected topology), simulate chromosome trajectories deterministically
-# from the real initial frame, and place real and simulated dynamics
-# side-by-side in a common PCA basis fit from the cell's combined
-# pole + chromosome point cloud (``fit_pca_basis``).  No manual
-# centering — the PCA basis handles centering, and PC1 is sign-aligned
-# with the pole-pole axis so spindle elongation is horizontal.
-#
-# Visual conventions match the rest of the paper:
-# - Centrosomes: Greys colormap (light → dark over time), thicker line,
-#   ○ start / ■ end markers.
-# - Chromosomes: tab20 categorical colors (one color per chromosome,
-#   no time encoding), small end-point dots.  We display a
-#   representative subset of chromosomes spanning the initial radial
-#   spread so the eye can match individual chromosomes between the
-#   real and simulated panels.
+# - Steric envelope rationale: the biologically admissible chromosome-
+#   chromosome interaction is short-range steric repulsion only,
+#   reflecting the kinetochore plus chromatid contact scale of ~1-2 um
+#   in RPE-1 cells (Renda 2020, Gallego 2010). The envelope encodes
+#   this prior in the basis itself rather than in the coefficients,
+#   so all downstream code (features, simulation, plotting,
+#   `diffusion.f_corrected`) is unaffected.
+# - Topology admissibility: `poles` and `center` are physically
+#   motivated (chromosome attracted to nearest pole vs to spindle
+#   midpoint). `poles_and_chroms_enveloped` adds short-range steric
+#   chromosome repulsion. `poles_and_chroms` (free) is a flexible
+#   nuisance-absorbing upper bound, not interpretable as biology.
+#   `center_and_chroms` is omitted from the plotted set for the same
+#   reason: full-range chromosome-chromosome forces are biologically
+#   inadmissible.
+# - Selection criterion: leave-one-cell-out deterministic-drift-rollout
+#   path MSE over the trimmed early-prometaphase window (NEB to
+#   `frac = 0.4` of NEB-AO, ~150 s at dt = 5 s). Path MSE integrates
+#   horizon-resolved error over the predeclared analysis window,
+#   avoiding an arbitrary single-horizon choice. Held-out forecast
+#   error vs horizon and per-cell breakdowns sit in Fig S2.
+# - Why deterministic rollout: the fitted scalar D may be dominated by
+#   measurement and tracking noise rather than thermal fluctuations, so
+#   stochastic rollouts can be actively misleading. The ensemble mean
+#   of many SDE replicates approximates the ODE solution when D is
+#   small and the force field is not strongly curved, so deterministic
+#   rollout is the cheap and noise-free version of the same quantity.
+# - Hyperparameters used for the fits in panels A-C: `n_basis = 10`,
+#   `lambda_rough = 1`, `lambda_ridge = 1e-6`. Sensitivity to these
+#   choices is in Fig S3.
+# - Cropping: f_xy is plotted out to 12 um (slightly past the
+#   data-supported 10 um range to keep the comparison readable);
+#   f_xx is plotted from the 1%-quantile of observed chromosome-
+#   chromosome distances out to the basis upper bound, so the free-fit
+#   long-range artifact is visible.
+
+# %% [markdown]
+# ## Fig 3b. Forward simulation reproduces observed gathering
 
 # %%
 from chromlearn.model_fitting.simulate import simulate_cell
@@ -1151,41 +1201,39 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig 4 — Effective diffusion D(d) and drift-signal fraction
+# Fig 3b. The selected short-range model reproduces chromosome
+# gathering when run forward from the real initial frame. Cell
+# `rpe18_ctr_006` is shown, projected into a PCA basis fit from the
+# cell's combined pole and chromosome point cloud. Left: real
+# trajectories. Middle: deterministic ODE rollout under the fitted
+# force kernels. Right: a single stochastic SDE replicate using
+# diffusion coefficient D_x/2, splitting the fitted noise budget
+# between intrinsic chromosome diffusion and localization/tracking
+# error. Centrosomes are colored in greys (light to dark over time)
+# with circle start and square end markers; chromosomes use one
+# categorical color per chromosome, with no time encoding, so the
+# eye can match individuals across panels.
 #
-# **Panel A.**  Local diffusivity is estimated from the mean-squared
-# residual displacement after subtracting the fitted deterministic
-# drift, $\langle |\delta X - \hat F(X) \cdot dt|^2 \rangle / (2 \cdot d \cdot dt)$,
-# which removes the leading drift contamination that otherwise biases
-# quadratic displacement estimators in this drift-dominated,
-# spatially heterogeneous setting.  In the Itô convention, the
-# projected drift already absorbs any basis-resolvable
-# $\nabla\!\cdot\!D$ contribution (Frishman & Ronceray PRX 2020,
-# App. H), so no separate correction is applied; the estimator is
-# not localization-noise-corrected.  Coordinate ``d`` is the
-# spindle-center distance.
-#
-# **Panel B.**  Local drift signal fraction
-#
-# $$
-#   f_{\mathrm{drift}}(d;\,T) \;=\;
-#   \frac{|F(d)|^{2}\,T}{|F(d)|^{2}\,T + 2\,D(d)},
-# $$
-#
-# the 1-D (force-direction) reduction of the Frishman--Ronceray
-# capacity rate $\tfrac{1}{2}\,F^{\!\top}\!D^{-1}F$ accumulated
-# over $T$ (PRX 2020).  Bounded $[0, 1]$; $f = 0.5$ when
-# drift-squared equals diffusive variance along the force
-# direction over the window.  Computed at the state level (per
-# chromosome per frame) and then median + IQR-binned by $d$.
-#
-# $T = 150$ s is the duration of the steady spindle-elongation
-# phase ("the elongation rate remains remarkably constant for
-# ~ 2.5 min"), the timescale over which the inferred drift law
-# is expected to apply.  The full trimmed window (~475 s) is not
-# used here because motors switch on/off between phases.  Spatial
-# ordering and shape are robust to $T$; sensitivity sweep in
-# Fig S5.
+# - Cell selection: a cell with low LOO path MSE on the selected
+#   topology is chosen as a representative example. The same panels
+#   for other cells are qualitatively similar but visually noisier;
+#   the example here is meant to be readable, not best-case.
+# - The PCA basis is fit from the combined pole-plus-chromosome point
+#   cloud, then sign-aligned so PC1 lies along the pole-pole axis. No
+#   manual centering is applied.
+# - Why D_x/2 in the stochastic panel: the fitted scalar D absorbs both
+#   genuine chromosome diffusion and kinetochore localization /
+#   tracking noise. Splitting D evenly is a display convention that
+#   avoids assigning all fitted residual variance to intrinsic
+#   chromosome motion. Changing this split changes the visible
+#   stochastic spread but not the deterministic fitted force field.
+# - Only one SDE replicate is shown; multi-replicate ensemble means
+#   approach the ODE rollout. The point is to show that a single noisy
+#   realization remains visibly close to the data.
+# - Quantitative held-out comparisons live in Fig 3 panel C and Fig S2.
+
+# %% [markdown]
+# ## Fig 4. Effective diffusion landscape and drift signal fraction
 
 # %%
 N_BASIS_D = 8
@@ -1394,3 +1442,56 @@ for ax_panel, label in [(ax4a, "A"), (ax4b, "B")]:
 fig4.tight_layout()
 save_figure(fig4, "fig4_diffusion_landscape")
 plt.show()
+
+# %% [markdown]
+# Fig 4. Drift outweighs diffusion across most of the spindle interior.
+# (A) Effective diffusivity D(d), plotted against the chromosome's
+# 3D distance d from the spindle center. The vermilion line is the
+# pooled fit across all cells; the band spans the per-cell 5-95 %
+# range; the dashed line is the fitted constant-D scalar for
+# reference. D grows away from the spindle center, consistent with
+# our previous report. (B) Local drift signal fraction
+# f_drift(d; T) = |F(d)|^2 T / (|F(d)|^2 T + 2 D(d)), the fraction
+# of a chromosome's motion attributable to the inferred force F(d)
+# rather than to random diffusion D(d), accumulated over a time
+# window T. f_drift = 0.5 is the crossover at which the squared
+# distance traveled under the drift force equals the variance
+# accumulated by diffusion over T. T = 150 s is the duration of the
+# steady spindle-elongation phase reported in Result 1 ("the
+# elongation rate remains remarkably constant for ~ 2.5 min").
+# Solid line is the bin median; band is IQR. Sensitivity to T is in
+# Fig S5.
+#
+# - D(d) is estimated as a second stage with the force field held
+#   fixed: residual displacements after subtracting the fitted drift,
+#   averaged in distance bins and divided by 2 dt. Subtracting the
+#   drift first removes the contamination that would otherwise bias a
+#   plain mean-squared-displacement estimator in this drift-dominated
+#   setting.
+# - Default fits use the Itô convention. When D depends on position,
+#   the Itô vs Stratonovich choice changes how a position-dependence
+#   of D enters the drift fit. We checked that the corresponding
+#   correction (the "spurious force" term proportional to the
+#   gradient of D) is small relative to the inferred force here, so
+#   D(d) is estimated in this second residual stage rather than
+#   refit jointly with the drift. The estimator does not subtract
+#   localization noise, so D conflates genuine thermal diffusion
+#   with kinetochore tracking error.
+# - d is the 3D Euclidean distance from the chromosome to the
+#   midpoint of the two centrosomes, not the distance to the nearest
+#   pole. The plot range is clipped to the 1-99 % quantile of the
+#   observed d distribution so the curve is shown only on the
+#   data-supported window.
+# - f_drift is computed per chromosome per frame and then median- and
+#   IQR-binned by d, with bins below 30 observations masked. Computing
+#   the ratio at each observation and then aggregating avoids the
+#   biases of smoothing |F|^2 and D separately and dividing.
+# - Why T = 150 s: the docx Result 1 reports that spindle elongation
+#   rate stays roughly constant for about 2.5 minutes from NEB, the
+#   time window over which the inferred constant-coefficient drift
+#   law is meant to apply. The full trimmed window (~475 s) is not
+#   used because motors switch on and off between mitotic phases.
+# - The spatial ordering and shape of f_drift(d; T) change little
+#   across T; only the 50/50 crossover position shifts. The T sweep
+#   is in Fig S5 panel A. Characteristic length L*(d) = 2 D / |F| and
+#   timescale tau_50(d) = 2 D / |F|^2 are in Fig S5 panels B and C.

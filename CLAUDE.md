@@ -58,6 +58,14 @@ When a quantity (kernel, topology, distance coordinate, timescale, etc.) is show
 - **Aesthetic vocabulary**: "+ attractive · - repulsive" sign labels on every kernel y-label; bold panel letters at top-left. Use Okabe-Ito for **categorical** distinctions (model / topology / cell). For **ordered numerical sweeps** (e.g. `n_basis`, `λ_rough`, observation timescale `T`), use a sequential perceptual colormap (viridis) so the colors themselves convey the ordering; the main-text value in the sweep is highlighted by linewidth, not a different palette.
 - **Naming**: refer to the canonical hyperparameter values as "main text" in supplement legend labels (not "canonical" — that is internal jargon).
 
+## Paper-figure notebook prose convention
+
+`00_main_figure.py` and `00b_supplement.py` are written so the rendered `.ipynb` (regenerated with `bash scripts/execute_notebooks.sh`) is shareable as the paper-figure draft itself. Each figure section follows a fixed pattern: a one-line `## Fig N. <title>` markdown header for navigation, then the data-prep + render code cell (untouched), then a markdown cell holding a paper-style caption followed by methodology bullets.
+
+Caption rules: plain prose (no bold), 1-3 sentences, lead sentence carries the take-home, one short clause per panel defining the quantity in words alongside the symbol, inferential status labeled (effective, selected, biologically inadmissible upper bound, sensitivity, etc.). Hyperparameters and other technical specifics appear in the caption only when they are required to interpret the figure (e.g. `T = 150 s` in main Fig 4 panel B); otherwise they go in bullets. No em dashes anywhere; jargon (capacity reduction, regressand, projection terms, state-level, etc.) is paraphrased into plain biophysics language. Bullets are a bare list with no header, carrying methodological and biological context that would otherwise be lost; co-author Alex Mogilner uses these to draft the methods section.
+
+Setup cells (publication style, data load, configuration constants) are technical, not paper-facing, and are left as plain technical prose. Methods drafting (main-text and extended supplement) is a separate later task and lives outside these notebooks.
+
 ## Active vs archived notebooks
 
 Paper-figure assemblers (primary interface for paper output):

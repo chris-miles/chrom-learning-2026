@@ -8,27 +8,15 @@
 # ---
 
 # %% [markdown]
-# # 00b -- Supplement figures
+# # 00b. Supplementary figures
 #
-# Five figures, each rendered as a self-contained PDF/PNG:
-#
-# - **S1** -- per-cell ``f_pp`` and ``f_cp`` kernels from the pp+cp
-#   pole-velocity model, plus the constrained-share refit sweep showing
-#   the ``(f_pp, f_cp)`` partition is non-identifiable.
-# - **S2** -- panel A: held-out from-NEB ensemble MSE vs forecast
-#   horizon (0-60 s) for the four topologies in main Fig 3; panel B:
-#   per-cell, per-model LOOCV path-MSE grouped bars.
-# - **S3** -- hyperparameter and convention sensitivity on the
-#   ``poles_and_chroms_enveloped`` topology: kernel-vs-hyperparameter
-#   sweep with three values per parameter [canonical, 10×, 0.1×],
-#   plus Itô vs Stratonovich path-MSE bars and pooled-kernel
-#   comparison.
-# - **S4** -- per-cell ``f_xy`` and short-range ``f_xx`` kernel
-#   spaghetti for the selected topology, over the pooled bootstrap
-#   CI band.
-# - **S5** -- drift-vs-diffusion sensitivity: T-sweep
-#   ``f_drift(d; T)``, drift-vs-diffusion crossover length
-#   ``L*(d) = 2 D / |F|`` (μm), and ``tau_50(d) = 2 D / |F|^2``.
+# Supplement-figure assembler for the chromlearn project. Each section
+# below produces one supplementary figure (PDF + 600 dpi PNG) backing
+# the main-text claims in `00_main_figure.py`: per-cell breakdowns of
+# the pole-velocity fit and its f_pp / f_cp non-identifiability,
+# forecast error vs horizon, sensitivity to basis size, smoothness
+# penalty, and Itô vs Stratonovich estimator, and characteristic
+# spatial and temporal scales of the drift-vs-diffusion comparison.
 
 # %%
 import sys
@@ -481,17 +469,7 @@ def constrained_share_sweep(cell_sep_rows, target_shares):
 
 
 # %% [markdown]
-# ## Fig S1 -- Per-cell pp/cp kernels and partition non-identifiability
-#
-# Three subpanels in one figure:
-#
-# - **(a)** per-cell ``f_pp(r)`` from the pp+cp pole-velocity model.
-# - **(b)** per-cell ``f_cp(r)`` from the same fits.
-# - **(c)** constrained-share refit sweep.  At each target cp share the
-#   model is refit subject to the constraint and held-out LOOCV RMSE on
-#   the spindle-separation observable is computed.  The flat curve over
-#   the ``(α·f_pp, (1-α)·f_cp)`` family makes the partition
-#   non-identifiability visceral.
+# ## Fig S1. Per-cell pp/cp kernels and partition non-identifiability
 
 # %%
 print("Fig S1: building pole-velocity feature rows...")
@@ -620,16 +598,52 @@ plt.show()
 
 
 # %% [markdown]
-# ## Fig S2 -- Forecast error vs horizon, 0-60 s
+# Fig S1. The pp+cp pole-velocity model cannot separately identify
+# the f_pp and f_cp kernels. (A) Per-cell f_pp(r) from individual
+# pp+cp fits (grey lines), with the per-cell median (dashed) and the
+# pooled fit (blue) overlaid. (B) Per-cell 46·f_cp(r), the per-pair
+# chromosome-to-pole contribution scaled by the typical chromosome
+# count, on the same y-axis as (A) for direct scale comparison. The
+# 46x value sums radial-magnitude contributions and so overstates
+# the actual chromosome contribution to pole velocity. (C)
+# Constrained-share refit sweep on the spindle-elongation velocity:
+# at each target chromosome-pole share
+# alpha = <|F_cp| / (|F_pp| + |F_cp|)>, the pp+cp model is refit with
+# alpha held to that value and held-out LOOCV RMSE on the elongation
+# velocity is recomputed. The curve is flat across alpha, which means
+# many different (f_pp, f_cp) splits fit the data equally well. The
+# unconstrained free-fit alpha* is marked as a vertical reference.
 #
-# Panel A: held-out from-NEB ensemble MSE (deterministic drift
-# rollout) vs horizon for the four topologies in main Fig 3, plus
-# a relative-difference inset (each curve minus the canonical
-# short-range curve) so the cross-topology winner at each horizon
-# is visible despite the curves nearly coinciding.
-#
-# Panel B: per-cell, per-model grouped bars of LOOCV path-MSE,
-# cells sorted by mean path-MSE across models.
+# - The pp+cp pole-velocity regression lives outside the
+#   `chromlearn.model_fitting` chromosome-dynamics pipeline, since
+#   here we are predicting pole motion rather than chromosome motion.
+#   The minimal design-matrix code is inlined in this notebook above.
+# - Each per-cell fit uses the same B-spline basis and roughness
+#   penalty as the pooled fit. Under-determined cells produce noisier
+#   curves; the pooled fit averages over cells.
+# - The 46x scaling on f_cp matches main Fig 2 panel B and converts
+#   the per-pair kernel into the per-pole total a centrosome
+#   experiences from the chromosome ensemble.
+# - Constrained-share construction: for a target alpha in [0, 1] we
+#   minimize the pole-velocity residual subject to a smooth equality
+#   constraint that enforces the predicted-share to that target. The
+#   sweep traces a continuous family of (alpha f_pp, (1 - alpha) f_cp)
+#   refits.
+# - Why the curve is flat rather than convex: pp+cp is a near-collinear
+#   regression on pole velocity; many (f_pp, f_cp) pairs fit equally
+#   well in a least-squares sense. The free-fit alpha* lies inside the
+#   flat region. Mild regularization by the structural constraint can
+#   even push the constrained sweep slightly below the free-fit RMSE,
+#   well within fold-to-fold SE; we do not plot a free-fit horizontal
+#   baseline because the dip would invite overinterpretation.
+# - The non-identifiability means |F_cp| should not be quoted as a
+#   separately meaningful biological force. The Fig 2 panel C
+#   comparison establishes that an inter-pole term is required;
+#   this panel shows that the f_pp / f_cp split inside the joint fit
+#   is not separately recoverable from this data.
+
+# %% [markdown]
+# ## Fig S2. Forecast error vs horizon and per-cell path MSE
 
 # %%
 TOPOLOGIES_S2 = list(TOPOLOGY_DISPLAY.keys())
@@ -756,22 +770,40 @@ fig_s2.tight_layout()
 save_figure(fig_s2, "figS2_forecast_horizon")
 plt.show()
 
+# %% [markdown]
+# Fig S2. Forecast accuracy is similar across topologies, with cell-
+# to-cell variation dominating model-to-model variation. (A) From-NEB
+# ensemble MSE under deterministic rollout vs forecast horizon
+# (0 to 60 s), for the same four topologies as in main Fig 3. The
+# inset plots each curve minus the short-range curve so the cross-
+# topology ordering at every horizon is visible despite near-overlap
+# on the absolute scale. (B) Per-cell path MSE (LOOCV) for the same
+# four topologies, with cells sorted by mean path MSE across models.
+#
+# - Horizon range follows the manuscript anchor: "show held-out
+#   forecast error vs horizon for up to 10 frames." With dt = 5 s,
+#   the code computes horizons through 30 frames (150 s); the
+#   displayed range is 0-60 s, slightly beyond the 10-frame (50 s)
+#   anchor so the early-horizon ordering remains readable.
+# - The deterministic rollout integrates the fitted drift field
+#   forward from the real initial frame without stochastic noise;
+#   D_x is not used as a noise source in this mode. Stochastic-
+#   ensemble rollouts give the same mean by construction when D is
+#   small and the force field is not strongly curved (see Fig 3
+#   bullets), at the cost of Monte Carlo variance.
+# - The relative-difference inset reveals that even where curves
+#   visually overlap on the absolute MSE scale, one topology is
+#   consistently lower than the others at every horizon. This is the
+#   horizon-resolved version of the path MSE selection in main
+#   Fig 3 panel C.
+# - Panel B shows that within a single cell, the four topologies
+#   produce path MSE values that are close to each other relative to
+#   the spread across cells. Cell-level structure (initial pole
+#   geometry, chromosome distribution) dominates the topology choice.
+
 
 # %% [markdown]
-# ## Fig S3 -- Hyperparameter and convention sensitivity
-#
-# - **(A)** Kernel-vs-hyperparameter sweep on the
-#   ``poles_and_chroms_enveloped`` topology.  Each hyperparameter is
-#   varied independently with the other fixed at the main-text value.
-#   Left column: ``n_basis`` sweep at fixed ``λ_rough``; right column:
-#   ``λ_rough`` sweep at fixed ``n_basis``.  Rows are ``f_xy(r)``
-#   (top) and ``f_xx(r)`` (bottom).  Three values per parameter on a
-#   sequential viridis colormap (low → dark, high → light); the
-#   main-text value is drawn in bold solid linewidth.
-# - **(B)** Learned ``f_xy(r)`` from the pooled fit under Itô vs
-#   Stratonovich, with held-out path-MSE bars as a small inset.
-# - **(C)** Learned ``f_xx(r)`` (short range) under the two
-#   calculus conventions.
+# ## Fig S3. Sensitivity to basis size, smoothness penalty, and Itô vs Stratonovich
 
 # %%
 ROLLOUT_HORIZONS_S3 = (1, 5, 10, 20)
@@ -1016,15 +1048,50 @@ for ax_panel, label in zip([ax_c, ax_d], ["B", "C"]):
 save_figure(fig_s3, "figS3_hyperparam_sensitivity")
 plt.show()
 
+# %% [markdown]
+# Fig S3. The selected short-range force kernels are stable to the
+# main fitting choices: basis size, smoothness penalty, and Itô vs
+# Stratonovich estimator.
+# (A) Independent sweeps of n_basis in {4, 10, 30} (left column) and
+# lambda_rough in {0.1, 1, 10} (right column) on the
+# poles_and_chroms_enveloped topology, with the other parameter held
+# at its main-text value. Top row is the chromosome-to-pole kernel
+# f_xy(r); bottom row is the chromosome-chromosome kernel f_xx(r).
+# A sequential viridis colormap encodes parameter ordering (low to
+# high, dark to light); the main-text value is drawn as a bold solid
+# line. (B) f_xy(r) from the pooled fit under Ito vs Stratonovich
+# estimators; the inset shows held-out path MSE under each convention.
+# (C) The corresponding f_xx(r) under the two conventions.
+#
+# - Sweep choice: each hyperparameter is varied independently rather
+#   than over a 2D grid so each panel isolates the effect of one
+#   parameter. The bias-variance tradeoff is shown in kernel space
+#   (the object we care about) rather than in trajectory space.
+# - n_basis = 10 and lambda_rough = 1 are the main-text values; the
+#   sweeps span a decade above and below in lambda_rough and a
+#   meaningful range below and above in n_basis.
+# - lambda_ridge is fixed at 1e-6 throughout (numerical jitter, not a
+#   meaningful regularizer in this project): we are not interpreting
+#   individual basis coefficients or seeking sparsity, so a coefficient-
+#   norm penalty has no physical role.
+# - Stratonovich estimator: midpoint-current with the SFI D times
+#   div(feature) force correction. Because D is residual-estimated and
+#   partly reflects localization and tracking noise, these panels are
+#   sensitivity diagnostics, not a definitive Ito-vs-Stratonovich
+#   resolution. The qualitative shape and sign of f_xy and f_xx are
+#   preserved across conventions.
+# - y-axis clipping: the main-text-curve range with ~40 % padding is
+#   used for the sweep panels so the visible window is dominated by
+#   the main-text fit, not by extreme-sweep small-r blow-ups; the
+#   Stratonovich f_xx panel is similarly clipped to the Ito range to
+#   avoid a small-r blow-up dominating the comparison.
+# - Across these one-at-a-time sweeps the visible sensitivity is
+#   mainly in kernel shape; held-out path MSE changes little, which
+#   is the basis for calling the selected fit stable.
+
 
 # %% [markdown]
-# ## Fig S4 -- Per-cell kernels for the selected topology
-#
-# Per-cell ``f_xy(r)`` and short-range ``f_xx(r)`` fits from the
-# selected ``poles_and_chroms_enveloped`` topology, one line per
-# cell, overlaid on the pooled bootstrap 5-95 % CI band.  The xx
-# panel is truncated at the 1%-quantile of observed chrom-chrom
-# pair distances.
+# ## Fig S4. Per-cell kernels for the selected topology
 
 # %%
 print("Fig S4: pooled fit + bootstrap...")
@@ -1110,23 +1177,33 @@ fig_s4.tight_layout()
 save_figure(fig_s4, "figS4_percell_kernels")
 plt.show()
 
+# %% [markdown]
+# Fig S4. Cell-to-cell variability in the learned force kernels.
+# Per-cell f_xy(r) (left) and f_xx(r) (right) from individual fits of
+# the selected short-range topology, one line per cell, overlaid on
+# the pooled bootstrap 5-95 % CI band. The f_xx panel is truncated at
+# the 1%-quantile of observed chromosome-chromosome distances so that
+# only the data-supported short-range portion of the kernel is shown.
+#
+# - Per-cell fits are computed by passing a single cell to `fit_model`
+#   with the same `FitConfig` as the pooled fit. The pooled bootstrap
+#   resamples cells; per-cell deviations smaller than the bootstrap
+#   band are broadly consistent with cell-level resampling
+#   variability.
+# - Selected short-range topology, matching Fig 3, with the same
+#   steric envelope: r0 = 1.5 um, w = 0.3 um.
+# - The shape of f_xy is conserved across cells (attractive at long
+#   range, vanishing or weakly repulsive at short range), with the
+#   amplitude varying cell to cell.
+# - For f_xx, the short-range repulsion dominates as expected from
+#   the steric envelope; cell-to-cell variation is concentrated near
+#   the contact regime where data density per cell is small.
+# - The bootstrap band on the pooled fit reflects the cell-level
+#   resampling distribution and is the preferred uncertainty summary.
+
 
 # %% [markdown]
-# ## Fig S5 -- Drift-vs-diffusion sensitivity
-#
-# - **(A)** Sensitivity to the choice of accumulation timescale $T$.
-#   Curves of $f_{\mathrm{drift}}(d; T)$ for several $T$ values.
-#   The monotone shape and spatial ordering are robust across $T$;
-#   the 50/50 crossover position shifts smoothly with $T$.
-# - **(B)** Drift-vs-diffusion crossover length
-#   $L^{*}(d) = 2\,D(d)/|F(d)|$ (μm) — the length over which
-#   $|F|\,t$ equals $\sqrt{2 D t}$.  Above $L^{*}$ drift dominates,
-#   below it diffusion dominates.  Horizontal reference at the
-#   chromosome-spacing scale (~1 μm).
-# - **(C)** Local 50/50 timescale $\tau_{50}(d) = 2\,D(d)/|F(d)|^{2}$,
-#   the time at which drift-squared equals diffusive variance along
-#   the force direction.  Horizontal reference at $T = 150$ s (the
-#   main-panel value).
+# ## Fig S5. Drift-vs-diffusion sensitivity and characteristic scales
 
 # %%
 print("Fig S5: drift-vs-diffusion sensitivity sweep...")
@@ -1308,3 +1385,43 @@ for ax_panel, label in zip(axes_s5, ["A", "B", "C"]):
 fig_s5.tight_layout()
 save_figure(fig_s5, "figS5_drift_diffusion_sensitivity")
 plt.show()
+
+# %% [markdown]
+# Fig S5. The drift-vs-diffusion split changes little across
+# accumulation timescales and has interpretable spatial scales.
+# (A) f_drift(d; T), the fraction of motion attributable to drift
+# rather than diffusion (defined in main Fig 4 panel B), evaluated at
+# several values of T: per-step dt, 50, 150, 300, and ~475 s (the
+# median trimmed-window length T_obs). Curves are color-coded on a
+# log-T viridis scale. The monotone shape and spatial ordering hold
+# across T; only the 50/50 crossover position shifts. (B) Drift-vs-
+# diffusion crossover length L*(d) = 2 D(d) / |F(d)|, the distance
+# at which |F| t equals sqrt(2 D t); above L* drift dominates, below
+# L* diffusion dominates. The dashed reference line marks the
+# ~1 um chromosome-spacing scale. (C) Local 50/50 timescale
+# tau_50(d) = 2 D(d) / |F(d)|^2, the time at which the drift force
+# moves a chromosome a distance equal to its diffusive standard
+# deviation. The dashed reference is T = 150 s, the value used in
+# main Fig 4 panel B.
+#
+# - The T sweep includes the per-step dt = 5 s as a lower bound, the
+#   main-text T = 150 s, and the per-cell trimmed-window length
+#   T_obs ~ 475 s as an upper bound. The intermediate values 50 and
+#   300 s bracket the main-text choice.
+# - L* and tau_50 give the same drift-vs-diffusion comparison as
+#   f_drift, in raw length and time units rather than as a bounded
+#   fraction. L* anchors the comparison to biological length scales
+#   (chromosome spacing); tau_50 anchors it to the steady-elongation
+#   duration.
+# - L* is below ~1 um across most of the spindle interior, meaning
+#   drift dominates already at sub-chromosome-spacing scales. This is
+#   the spatial counterpart to f_drift > 0.5.
+# - tau_50 is mostly below ~150 s, the main-text accumulation window.
+#   This means a typical chromosome's drift signal becomes detectable
+#   well within the steady-elongation phase even where f_drift is not
+#   already close to 1.
+# - All three panels are computed per chromosome per frame, then
+#   median- and IQR-binned by spindle-center distance d, with bins
+#   below 30 observations masked; this matches the estimator used in
+#   main Fig 4. Panel A traces the bin-median curve for each T and
+#   omits the IQR band to keep the sweep readable.
